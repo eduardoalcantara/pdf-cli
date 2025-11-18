@@ -1,0 +1,25 @@
+{
+    // Configura o Prompt do Windows (Command Prompt) como terminal padrão
+    // Este arquivo define configurações específicas para este projeto no VS Code
+    "terminal.integrated.defaultProfile.windows": "Command Prompt",
+
+    // Configurações adicionais úteis para o projeto PDF-cli
+    "files.encoding": "utf8",
+    "files.eol": "\n",
+    "python.defaultInterpreterPath": "python",
+
+    // Configurações de formatação Python
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": true
+    },
+
+    // Extensões recomendadas para Python
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true,
+
+    // Configurações de terminal
+    "terminal.integrated.cwd": "${workspaceFolder}",
+    "terminal.integrated.scrollback": 1000
+}

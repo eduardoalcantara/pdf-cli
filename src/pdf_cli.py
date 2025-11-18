@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-PDF-cli - Ferramenta CLI para automação de edição de arquivos PDF.
-
 Entrypoint principal e roteador de comandos da aplicação. Este módulo
 define a interface de linha de comando usando Typer, incluindo todos
 os subcomandos e suas opções.
@@ -51,19 +49,27 @@ except ImportError:
 # Inicialização do Typer e Rich
 app = typer.Typer(
     name="pdf-cli",
-    help="Ferramenta CLI para automação de edição de arquivos PDF",
+    help="",
     add_completion=False,
 )
 console = Console()
 
 
-def print_welcome() -> None:
-    """Exibe mensagem de boas-vindas."""
-    welcome_text = Text()
-    welcome_text.append("PDF-cli", style="bold cyan")
-    welcome_text.append(" - Ferramenta CLI para edição de arquivos PDF\n", style="dim")
-    console.print(welcome_text)
-    console.print("Use [bold]--help[/bold] após qualquer comando para mais informações.\n")
+def print_banner() -> None:
+    """
+    Exibe o banner ASCII artístico do PDF-cli.
+
+    Banner conforme ESPECIFICACOES-FASE-2-EXTRACAO-EDICAO-TEXTO.md
+    Este banner deve ser exibido obrigatoriamente ao executar o programa sem parâmetros.
+    """
+    banner = """┏━┓╺┳┓┏━╸  ┏━╸╻  ╻
+┣━┛ ┃┃┣╸╺━╸┃  ┃  ┃
+╹  ╺┻┛╹    ┗━╸┗━╸╹
+2025 ⓒ Eduardo Alcantara
+Made With Perplexity & Cursor
+Ferramenta CLI para automação de edição de arquivos PDF"""
+    console.print(banner, style="bold cyan")
+    console.print("\n[dim]For help on individual commands:[/dim] [bold]pdf.exe <command> --help[/bold]")
 
 
 @app.callback(invoke_without_command=True)
@@ -72,8 +78,6 @@ def main(
     version: bool = typer.Option(False, "--version", "-v", help="Exibe a versão"),
 ) -> None:
     """
-    PDF-cli - Ferramenta CLI para automação de edição de arquivos PDF.
-
     Comandos disponíveis:
         extract       - Extrai textos do PDF para JSON
         replace       - Substitui textos no PDF
@@ -81,13 +85,13 @@ def main(
         delete-pages  - Exclui páginas específicas
     """
     if version:
-        console.print("[bold cyan]PDF-cli[/bold cyan] versão 0.1.0 (Fase 1)")
+        console.print("[bold cyan]PDF-cli[/bold cyan] versão 0.2.0 (Fase 2)")
         raise typer.Exit()
 
     if ctx.invoked_subcommand is None:
-        print_welcome()
+        # Banner obrigatório conforme Fase 2
+        print_banner()
         console.print(ctx.get_help())
-        console.print("\n[dim]Para começar, use:[/dim] [bold]pdf-cli extract --help[/bold]")
 
 
 @app.command("extract")
