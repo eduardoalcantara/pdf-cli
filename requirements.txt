@@ -1,0 +1,13 @@
+# PDF-cli - Dependências do Projeto
+# Versão mínima Python: 3.8
+
+# Manipulação de PDFs
+PyMuPDF>=1.23.0  # Biblioteca principal para manipulação avançada de PDFs (fitz)
+PyPDF2>=3.0.0    # Biblioteca auxiliar para operações complementares de PDF
+
+# CLI e Interface
+typer>=0.9.0     # Framework moderno para criação de CLIs em Python (baseado em Click)
+rich>=13.0.0     # Biblioteca para output colorido e formatado no terminal (usado pelo Typer)
+
+# Utilitários (podem ser adicionados nas fases futuras)
+# click>=8.1.0   # (incluso como dependência do Typer, não precisa instalar separadamente)
