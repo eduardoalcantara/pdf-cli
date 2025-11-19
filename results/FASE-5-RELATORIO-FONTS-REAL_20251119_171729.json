@@ -1,0 +1,226 @@
+{
+  "data_relatorio": "2025-11-19T17:17:29.906498",
+  "versao": "0.5.0 (Fase 5)",
+  "total_testes": 13,
+  "testes": [
+    {
+      "arquivo_pdf": "orçamento.pdf",
+      "caminho_completo": "examples/orçamento.pdf",
+      "arquivo_saida": "orçamento_test.pdf",
+      "timestamp": "2025-11-19T17:16:10.400303",
+      "operation_id": "6ef9dbc76c16b189841fd25ab8d378ca",
+      "engine_final": "pymupdf",
+      "fallback_detectado": false,
+      "preservacao_fonte": true,
+      "tentativas_engine": 1,
+      "detalhes_tentativas": [
+        {
+          "engine": "pymupdf",
+          "sucesso": true,
+          "fallback_detectado": false,
+          "tempo_execucao_ms": 30.875444412231445,
+          "erro": null,
+          "comparacoes_fonte": 0
+        }
+      ]
+    },
+    {
+      "arquivo_pdf": "despacho.pdf",
+      "caminho_completo": "examples/despacho.pdf",
+      "arquivo_saida": "despacho_test.pdf",
+      "timestamp": "2025-11-19T17:15:44.159550",
+      "operation_id": "988889ee5ca3873f8ef1047004546584",
+      "engine_final": "pymupdf",
+      "fallback_detectado": false,
+      "preservacao_fonte": true,
+      "tentativas_engine": 1,
+      "detalhes_tentativas": [
+        {
+          "engine": "pymupdf",
+          "sucesso": true,
+          "fallback_detectado": false,
+          "tempo_execucao_ms": 10.774612426757812,
+          "erro": null,
+          "comparacoes_fonte": 0
+        }
+      ]
+    },
+    {
+      "arquivo_pdf": "demonstrativo.pdf",
+      "caminho_completo": "examples/demonstrativo.pdf",
+      "arquivo_saida": "demonstrativo_test.pdf",
+      "timestamp": "2025-11-19T17:15:43.822335",
+      "operation_id": "ef7109452faf847553fe388078cec906",
+      "engine_final": "pymupdf",
+      "fallback_detectado": false,
+      "preservacao_fonte": true,
+      "tentativas_engine": 1,
+      "detalhes_tentativas": [
+        {
+          "engine": "pymupdf",
+          "sucesso": true,
+          "fallback_detectado": false,
+          "tempo_execucao_ms": 82.05890655517578,
+          "erro": null,
+          "comparacoes_fonte": 0
+        }
+      ]
+    },
+    {
+      "arquivo_pdf": "contracheque.pdf",
+      "caminho_completo": "examples/contracheque.pdf",
+      "arquivo_saida": "contracheque_test.pdf",
+      "timestamp": "2025-11-19T17:15:43.302211",
+      "operation_id": "0e76245a8de4ee7a985541202aa77abf",
+      "engine_final": "pymupdf",
+      "fallback_detectado": false,
+      "preservacao_fonte": true,
+      "tentativas_engine": 1,
+      "detalhes_tentativas": [
+        {
+          "engine": "pymupdf",
+          "sucesso": true,
+          "fallback_detectado": false,
+          "tempo_execucao_ms": 84.65170860290527,
+          "erro": null,
+          "comparacoes_fonte": 0
+        }
+      ]
+    },
+    {
+      "arquivo_pdf": "boleto.pdf",
+      "caminho_completo": "examples/boleto.pdf",
+      "arquivo_saida": "boleto_test.pdf",
+      "timestamp": "2025-11-19T17:13:42.936743",
+      "operation_id": "00aac9762c6e8bfc343506b464724959",
+      "engine_final": "pymupdf",
+      "fallback_detectado": false,
+      "preservacao_fonte": true,
+      "tentativas_engine": 1,
+      "detalhes_tentativas": [
+        {
+          "engine": "pymupdf",
+          "sucesso": true,
+          "fallback_detectado": false,
+          "tempo_execucao_ms": 80.11865615844727,
+          "erro": null,
+          "comparacoes_fonte": 0
+        }
+      ]
+    },
+    {
+      "arquivo_pdf": "boleto.pdf",
+      "caminho_completo": "examples/boleto.pdf",
+      "arquivo_saida": "boleto_test_pypdf.pdf",
+      "timestamp": "2025-11-19T17:12:56.303351",
+      "operation_id": "8cc17eb19e5a0703910f996449190a10",
+      "engine_final": "pymupdf",
+      "fallback_detectado": false,
+      "preservacao_fonte": true,
+      "tentativas_engine": 1,
+      "detalhes_tentativas": [
+        {
+          "engine": "pymupdf",
+          "sucesso": true,
+          "fallback_detectado": false,
+          "tempo_execucao_ms": 58.88700485229492,
+          "erro": null,
+          "comparacoes_fonte": 0
+        }
+      ]
+    },
+    {
+      "arquivo_pdf": "boleto.pdf",
+      "caminho_completo": "examples/boleto.pdf",
+      "arquivo_saida": "boleto_test_pymupdf.pdf",
+      "timestamp": "2025-11-19T17:11:47.759246",
+      "operation_id": "afbf902919ee06c81a9aa5f21eb5a179",
+      "engine_final": "pymupdf",
+      "fallback_detectado": false,
+      "preservacao_fonte": true,
+      "tentativas_engine": 1,
+      "detalhes_tentativas": [
+        {
+          "engine": "pymupdf",
+          "sucesso": true,
+          "fallback_detectado": false,
+          "tempo_execucao_ms": 75.06966590881348,
+          "erro": null,
+          "comparacoes_fonte": 0
+        }
+      ]
+    },
+    {
+      "arquivo_pdf": "orçamento.pdf",
+      "caminho_completo": "examples\\orçamento.pdf",
+      "arquivo_saida": "orçamento_edited.pdf",
+      "timestamp": "2025-11-19T15:08:00.401304",
+      "operation_id": "edit-text-all-occurrences_20251119_150800",
+      "engine_final": "",
+      "fallback_detectado": false,
+      "preservacao_fonte": false,
+      "tentativas_engine": 0,
+      "detalhes_tentativas": []
+    },
+    {
+      "arquivo_pdf": "despacho.pdf",
+      "caminho_completo": "examples\\despacho.pdf",
+      "arquivo_saida": "despacho_edited.pdf",
+      "timestamp": "2025-11-19T15:07:56.289809",
+      "operation_id": "edit-text-all-occurrences_20251119_150756",
+      "engine_final": "",
+      "fallback_detectado": false,
+      "preservacao_fonte": false,
+      "tentativas_engine": 0,
+      "detalhes_tentativas": []
+    },
+    {
+      "arquivo_pdf": "demonstrativo.pdf",
+      "caminho_completo": "examples\\demonstrativo.pdf",
+      "arquivo_saida": "demonstrativo_edited.pdf",
+      "timestamp": "2025-11-19T15:07:55.263661",
+      "operation_id": "edit-text-all-occurrences_20251119_150755",
+      "engine_final": "",
+      "fallback_detectado": false,
+      "preservacao_fonte": false,
+      "tentativas_engine": 0,
+      "detalhes_tentativas": []
+    },
+    {
+      "arquivo_pdf": "contracheque.pdf",
+      "caminho_completo": "examples\\contracheque.pdf",
+      "arquivo_saida": "contracheque_edited.pdf",
+      "timestamp": "2025-11-19T15:07:50.754854",
+      "operation_id": "edit-text-all-occurrences_20251119_150750",
+      "engine_final": "",
+      "fallback_detectado": false,
+      "preservacao_fonte": false,
+      "tentativas_engine": 0,
+      "detalhes_tentativas": []
+    },
+    {
+      "arquivo_pdf": "boleto.pdf",
+      "caminho_completo": "examples\\boleto.pdf",
+      "arquivo_saida": "boleto_edited.pdf",
+      "timestamp": "2025-11-19T15:07:47.298103",
+      "operation_id": "edit-text-all-occurrences_20251119_150747",
+      "engine_final": "",
+      "fallback_detectado": false,
+      "preservacao_fonte": false,
+      "tentativas_engine": 0,
+      "detalhes_tentativas": []
+    },
+    {
+      "arquivo_pdf": "boleto.pdf",
+      "caminho_completo": "examples/boleto.pdf",
+      "arquivo_saida": "boleto_edited.pdf",
+      "timestamp": "2025-11-19T15:06:44.799396",
+      "operation_id": "edit-text-all-occurrences_20251119_150644",
+      "engine_final": "",
+      "fallback_detectado": false,
+      "preservacao_fonte": false,
+      "tentativas_engine": 0,
+      "detalhes_tentativas": []
+    }
+  ]
+}

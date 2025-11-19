@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any, Union, Tuple, Callable
 import json
 import shutil
+import time
 from datetime import datetime
 
 from core.models import (
@@ -20,8 +21,11 @@ from core.models import (
 )
 from core.exceptions import (
     PDFFileNotFoundError, PDFMalformedError, TextNotFoundError,
-    InvalidPageError, PaddingError
+    InvalidPageError, PaddingError, PDFCliException
 )
+from core.font_manager import FontManager, FontMatchQuality
+from core.engine_manager import EngineManager
+from core.engine_manager import EngineManager, EngineResult, EngineType, create_audit_log
 import fitz  # PyMuPDF
 from app.pdf_repo import PDFRepository
 from app.logging import get_logger
@@ -34,7 +38,8 @@ from app.logging import get_logger
 def export_objects(
     pdf_path: str,
     output_path: str,
-    types: Optional[List[str]] = None
+    types: Optional[List[str]] = None,
+    include_fonts: bool = False
 ) -> Dict[str, Any]:
     """
     Extrai e exporta objetos do PDF para JSON.
@@ -94,6 +99,63 @@ def export_objects(
         # Table, formfield, graphic, layer, filter requerem algoritmos mais complexos
         # de detecção e parsing. Podem ser implementados em fases futuras conforme necessidade.
 
+        # Extrair fontes se solicitado
+        fonts_info = None
+        if include_fonts:
+            fonts_dict = repo.extract_fonts()
+            text_objects_for_stats = repo.extract_text_objects()
+
+            # Estatísticas de uso por fonte
+            font_stats = {}
+            for text_obj in text_objects_for_stats:
+                font_name = text_obj.font_name
+                if font_name not in font_stats:
+                    font_stats[font_name] = {
+                        "pages": set(),
+                        "sizes": set(),
+                        "occurrences": 0
+                    }
+                font_stats[font_name]["pages"].add(text_obj.page)
+                font_stats[font_name]["sizes"].add(text_obj.font_size)
+                font_stats[font_name]["occurrences"] += 1
+
+            # Preparar informações de fontes
+            fonts_list = []
+            for font_key, font_data in fonts_dict.items():
+                usage = font_stats.get(font_key, {})
+                name_upper = font_data.name.upper() if font_data.name else ""
+                variants = []
+                if font_data.is_bold:
+                    variants.append("Bold")
+                if font_data.is_italic:
+                    variants.append("Italic")
+                if "NARROW" in name_upper:
+                    variants.append("Narrow")
+                if "CONDENSED" in name_upper:
+                    variants.append("Condensed")
+                if "LIGHT" in name_upper:
+                    variants.append("Light")
+                if "BLACK" in name_upper:
+                    variants.append("Black")
+
+                fonts_list.append({
+                    "name": font_data.name,
+                    "base_font": font_data.base_font,
+                    "variants": variants,
+                    "embedded": font_data.font_file_path is not None,
+                    "encoding": getattr(font_data, 'encoding', ''),
+                    "usage": {
+                        "occurrences": usage.get("occurrences", 0),
+                        "pages": sorted(list(usage.get("pages", set()))),
+                        "sizes": sorted(list(usage.get("sizes", set())))
+                    }
+                })
+
+            fonts_info = {
+                "total_fonts": len(fonts_list),
+                "fonts": sorted(fonts_list, key=lambda x: x["name"] or "")
+            }
+
         # Agrupar por página
         grouped = {}
         for obj_type, objects in all_objects.items():
@@ -106,9 +168,14 @@ def export_objects(
                         grouped[page][obj_type] = []
                     grouped[page][obj_type].append(obj)
 
+        # Preparar dados para salvar
+        output_data = grouped.copy()
+        if include_fonts and fonts_info:
+            output_data["_fonts"] = fonts_info
+
         # Salvar JSON
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(grouped, f, indent=2, ensure_ascii=False)
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
 
         # Estatísticas
         stats = {
@@ -116,6 +183,9 @@ def export_objects(
             "by_type": {t: len(objs) for t, objs in all_objects.items()},
             "by_page": {str(p): sum(len(objs) for objs in types.values()) for p, types in grouped.items()}
         }
+
+        if include_fonts and fonts_info:
+            stats["fonts"] = fonts_info
 
         # Log da operação
         logger.log_operation(
@@ -145,7 +215,9 @@ def _edit_text_all_occurrences(
     color: Optional[str] = None,
     rotation: Optional[float] = None,
     create_backup: bool = True,
-    feedback_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+    feedback_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    prefer_engine: str = "pymupdf",
+    strict_fonts: bool = False
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Função auxiliar para editar todas as ocorrências de um texto.
@@ -153,21 +225,39 @@ def _edit_text_all_occurrences(
     Processa todas as ocorrências do search_term no PDF e substitui por new_content,
     preservando o texto completo quando search_term é uma substring.
 
+    Conforme Fase 5: Integra engine manager para detecção de fallback de fonte.
+
     Args:
         feedback_callback: Função opcional chamada após cada ocorrência processada.
                           Recebe um dict com: id, page, coordinates, original_content,
                           new_content, font_original, font_used, font_fallback, changes
+        prefer_engine: Engine preferido ("pymupdf" ou "pypdf")
 
     Returns:
         tuple[str, List[Dict]]: (caminho_do_arquivo, lista_de_detalhes_das_ocorrências)
     """
     logger = get_logger()
 
+    # Inicializar engine manager (Fase 5)
+    engine_manager = EngineManager(prefer_engine=prefer_engine)
+
+    # Inicializar font manager para rastrear fontes
+    font_manager = FontManager()
+
     # Criar backup se solicitado
     backup_path = None
     if create_backup:
         with PDFRepository(pdf_path) as repo:
             backup_path = repo.create_backup()
+
+    # Extrair objetos de texto ORIGINAIS antes da edição (para comparação de fontes)
+    original_text_objects = []
+    with PDFRepository(pdf_path) as repo:
+        original_text_objects = repo.extract_text_objects()
+
+    # Filtrar apenas objetos que contêm o search_term (serão modificados)
+    target_objects = [obj for obj in original_text_objects if search_term in obj.content]
+    target_object_ids = [obj.id for obj in target_objects]
 
     # Sempre usar arquivo temporário para evitar problemas de lock no Windows
     # PyMuPDF com incremental=False não pode salvar no mesmo arquivo que foi aberto
@@ -198,16 +288,21 @@ def _edit_text_all_occurrences(
     with PDFRepository(working_temp_path) as repo:
         doc = repo.open()
 
-        # Preparar fonte e cor uma única vez (reutilizar para todas as ocorrências)
-        font_mapping = {
-            "ArialMT": "helv",
-            "Arial": "helv",
-            "ArialNarrow": "helv",
-            "ArialNarrow-Bold": "hebo",
-            "Times": "tiro",
-            "Times-Roman": "tiro",
-            "Courier": "cour",
-        }
+        # OPÇÃO 1 + 2: Extrair fontes originais do PDF antes da edição
+        # Isso permite usar fontes embeddadas e fazer mapeamento inteligente
+        fonts_dict = repo.extract_fonts()
+        logger.log_operation(
+            operation_type="extract-fonts",
+            input_file=pdf_path,
+            output_file=None,
+            parameters={"fonts_found": len(fonts_dict)},
+            result={"font_names": list(fonts_dict.keys())},
+            status="info",
+            notes=f"Extraídas {len(fonts_dict)} fontes do PDF original para preservação"
+        )
+
+        # Cache de fontes carregadas (para reutilização)
+        font_cache = {}
 
         # Preparar cor (reutilizável)
         color_rgb = (0, 0, 0)
@@ -251,52 +346,152 @@ def _edit_text_all_occurrences(
 
             # Determinar propriedades finais
             final_font = target_obj.font_name if not font_name else font_name
+            # IMPORTANTE: Preservar tamanho visual, não apenas tamanho em pontos
+            # Se font_size não foi especificado, usar o tamanho original
+            # Mas também considerar altura visual do texto original
+            original_height = target_obj.height
+            original_font_size = target_obj.font_size
             final_font_size = target_obj.font_size if font_size is None else font_size
             final_rotation = target_obj.rotation if rotation is None else rotation
 
-            # Mapear e carregar fonte
+            # OPÇÃO 1 + 2: Carregar fonte usando extração e embeddagem
             font_loaded = None
-            mapped_font = font_mapping.get(final_font) if final_font else None
-            if mapped_font:
-                try:
-                    font_loaded = fitz.Font(mapped_font)
-                except:
-                    pass
-
-            if font_loaded is None and final_font:
-                try:
-                    font_loaded = fitz.Font(final_font)
-                except:
-                    pass
-
-            if font_loaded is None:
-                font_loaded = fitz.Font("helv")
-
-            fontname_to_use = font_loaded.name
+            font_source = "unknown"
             font_fallback_occurred = False
 
-            # Detectar se houve fallback de fonte
-            if mapped_font:
-                # Fonte foi mapeada (fallback)
-                font_fallback_occurred = True
-                font_used_source = f"mapeada ({final_font} → {mapped_font})"
-            elif font_loaded.name == "Helvetica" and final_font and final_font != "helv":
-                # Fonte original não encontrada, caiu para Helvetica padrão
-                font_fallback_occurred = True
-                font_used_source = f"fallback padrão (Helvetica)"
+            # Tentar obter fonte do cache primeiro
+            if final_font and final_font in font_cache:
+                font_loaded = font_cache[final_font]
+                font_source = "cache"
             else:
-                # Fonte original foi usada
-                font_used_source = f"original ({final_font})"
+                # Usar nova função que tenta múltiplas estratégias
+                font_loaded, font_source = repo.get_font_for_text_object(final_font, fonts_dict)
 
-            if final_font and "bold" in final_font.lower() and "hebo" not in fontname_to_use.lower():
+                if font_loaded:
+                    # Detectar se é fonte embeddada (melhor opção)
+                    if final_font in fonts_dict and fonts_dict[final_font].font_file_path:
+                        font_source = "embedded"
+
+                    # Cachear fonte para reutilização
+                    if final_font:
+                        font_cache[final_font] = font_loaded
+
+                    # Verificar se houve fallback e registrar no font_manager
+                    # Se a fonte usada não corresponde exatamente à original, houve fallback
+                    if font_source in ["system", "extracted", "fallback", "cache"] and final_font:
+                        # Verificar se nome da fonte carregada corresponde
+                        loaded_font_name = font_loaded.name if hasattr(font_loaded, 'name') else ""
+                        font_name_matches = (loaded_font_name.lower() in final_font.lower() or
+                                           final_font.lower() in loaded_font_name.lower())
+
+                        # Determinar qualidade da correspondência para font_manager
+                        if font_source == "extracted" or font_source == "embedded":
+                            match_quality = FontMatchQuality.EXACT
+                        elif font_name_matches and font_source in ["system", "cache"]:
+                            match_quality = FontMatchQuality.EXACT
+                        elif font_source in ["system", "cache"] and not font_name_matches:
+                            # Fonte do sistema mas nome não corresponde = variante
+                            match_quality = FontMatchQuality.VARIANT
+                        elif font_source == "fallback":
+                            # Fallback explícito = fonte faltante
+                            match_quality = FontMatchQuality.FALLBACK
+                        else:
+                            match_quality = FontMatchQuality.SIMILAR
+
+                        # Registrar no font_manager apenas se não for correspondência exata
+                        if match_quality != FontMatchQuality.EXACT:
+                            font_manager.add_requirement(
+                                font_name=final_font,
+                                found_font=loaded_font_name,
+                                match_quality=match_quality,
+                                system_path=getattr(font_loaded, '_fontfile', None),
+                                page=target_obj.page
+                            )
+
+                        if not font_name_matches:
+                            # Nome não corresponde - indica fallback
+                            if font_source != "embedded":
+                                font_fallback_occurred = True
+                                if font_source not in ["fallback"]:
+                                    font_source = "fallback"  # Marcar como fallback se nome não corresponde
+                else:
+                    # Falha total
+                    font_source = "none"
+                    font_fallback_occurred = True
+                    # Registrar fonte faltante
+                    font_manager.add_requirement(
+                        font_name=final_font,
+                        found_font=None,
+                        match_quality=FontMatchQuality.MISSING,
+                        page=target_obj.page
+                    )
+
+            # IMPORTANTE: Ajustar tamanho da fonte para preservar altura visual
+            # Se a fonte mudou (fallback ou sistema), pode ter métricas diferentes
+            # Calcular tamanho necessário baseado na altura original real
+            # Ajuste será aplicado se:
+            # 1. Fonte mudou (system ou fallback) OU
+            # 2. Fonte foi carregada mas nome não corresponde (indica fallback)
+            font_changed = (font_source in ["system", "fallback"]) or (font_loaded and font_fallback_occurred)
+
+            if font_changed and original_font_size > 0:
                 try:
-                    bold_font = fitz.Font("hebo")
-                    fontname_to_use = bold_font.name
-                    if not font_fallback_occurred:
-                        font_fallback_occurred = True
-                        font_used_source += " → bold aplicado"
-                except:
+                    # Calcular proporção real da altura original em relação ao tamanho da fonte
+                    # Isso nos diz o quão "alta" essa fonte específica é
+                    height_ratio = original_height / original_font_size if original_font_size > 0 else 1.3
+
+                    # Para preservar altura visual, calcular tamanho necessário
+                    # Estratégia: preservar altura absoluta (original_height) ao invés de tamanho em pontos
+                    # Se queremos altura H e nova fonte tem proporção padrão (1.2), tamanho = H / 1.2
+                    standard_ratio = 1.2  # Proporção padrão altura/tamanho
+
+                    # Calcular tamanho necessário para preservar altura original
+                    adjusted_size = original_height / standard_ratio
+
+                    # Se proporção original é significativamente diferente (>15%), usar proporção original
+                    # Isso é mais preciso para fontes com métricas especiais
+                    if abs(height_ratio - standard_ratio) > 0.15:
+                        adjusted_size = original_height / height_ratio
+
+                    # Limitar ajuste para não ser muito extremo (entre 0.8x e 1.3x do original)
+                    # Isso previne ajustes muito grandes que podem quebrar layout
+                    if adjusted_size < original_font_size * 0.8:
+                        adjusted_size = original_font_size * 0.9  # Redução moderada
+                    elif adjusted_size > original_font_size * 1.3:
+                        adjusted_size = original_font_size * 1.15  # Aumento moderado
+
+                    # Aplicar ajuste
+                    final_font_size = max(1.0, round(adjusted_size, 1))  # Mínimo 1pt, 1 casa decimal
+                except Exception as e:
+                    # Se falhar, usar tamanho original
                     pass
+
+            # Obter nome da fonte para uso no insert_text (sem espaços, sem caracteres especiais)
+            if font_loaded and hasattr(font_loaded, 'name'):
+                font_loaded_name = font_loaded.name
+                # Remover espaços e caracteres especiais do nome para usar no insert_text
+                # PyMuPDF não aceita espaços no fontname
+                fontname_to_use = font_loaded_name.replace(' ', '').replace('-', '')
+            else:
+                fontname_to_use = final_font.replace(' ', '').replace('-', '') if final_font else "helv"
+
+            # Preparar nome seguro para fonte (sem espaços) - será usado no insert_font
+            safe_font_name = final_font.replace(' ', '').replace('-', '').replace('_', '') if final_font else fontname_to_use.replace(' ', '').replace('-', '')
+            embedded_font_name = None  # Será definido após embeddagem na página
+
+            # Determinar fonte usada para log/feedback
+            display_font_name = font_loaded.name if font_loaded and hasattr(font_loaded, 'name') else (final_font or "helv")
+            if font_source == "embedded":
+                font_used_source = f"embeddada do PDF ({final_font})"
+            elif font_source == "extracted":
+                font_used_source = f"extraída ({final_font})"
+            elif font_source == "system":
+                font_used_source = f"sistema ({display_font_name}) - embeddada no PDF"
+            elif font_source == "fallback":
+                font_used_source = f"fallback padrão (Helvetica)"
+                font_fallback_occurred = True
+            else:
+                font_used_source = f"original ({final_font})"
 
             # Coletar detalhes da ocorrência
             occurrence_details = {
@@ -311,7 +506,7 @@ def _edit_text_all_occurrences(
                 "original_content": original_content,
                 "new_content": final_content,
                 "font_original": final_font,
-                "font_used": fontname_to_use,
+                "font_used": display_font_name if font_loaded and hasattr(font_loaded, 'name') else fontname_to_use,
                 "font_fallback": font_fallback_occurred,
                 "font_source": font_used_source,
                 "font_size": final_font_size,
@@ -340,20 +535,89 @@ def _edit_text_all_occurrences(
             # Aplicar edição no PDF
             page = doc[target_obj.page]
 
+            # Embeddar fonte na página ANTES de usar (se for fonte do sistema)
+            # IMPORTANTE: safe_font_name já foi definido acima usando final_font
+            # Precisamos embeddar usando esse nome e depois usar o MESMO nome no insert_text
+            if font_loaded and font_source in ["system"] and hasattr(font_loaded, '_fontfile') and font_loaded._fontfile:
+                try:
+                    # Embeddar usando o nome seguro (final_font sem espaços/hífens)
+                    # Isso garante que o nome usado no insert_font seja o mesmo do insert_text
+                    embedded_font_name = repo.embed_font(page, font_loaded, final_font)
+                    # Se embeddagem foi bem-sucedida, usar o nome retornado (que é o safe_font_name)
+                    if embedded_font_name:
+                        safe_font_name = embedded_font_name  # Usar nome embeddado
+                    # Se não retornou nome mas embeddagem pode ter funcionado, manter safe_font_name
+                except Exception as e:
+                    # Se falhar ao embeddar, continuar com nome seguro original
+                    pass
+
             # Remover texto antigo usando redaction
             bbox = fitz.Rect(target_obj.x, target_obj.y, target_obj.x + target_obj.width, target_obj.y + target_obj.height)
             page.add_redact_annot(bbox, fill=(1, 1, 1))
             page.apply_redactions()
 
-            # Inserir novo texto com formatação preservada
-            page.insert_text(
-                point=(target_obj.x, target_obj.y + final_font_size),
-                text=final_content,
-                fontsize=final_font_size,
-                fontname=fontname_to_use,
-                color=color_rgb,
-                rotate=final_rotation
-            )
+            # SOLUÇÃO DEFINITIVA: Usar TextWriter ao invés de insert_text
+            # TextWriter suporta fontes customizadas diretamente via objeto Font
+            # Isso preserva a fonte original sem fallback para Helvetica
+            try:
+                # Criar TextWriter para a página
+                tw = fitz.TextWriter(page.rect)
+
+                # IMPORTANTE: Calcular posição correta
+                # TextWriter usa coordenadas (x, y) onde y é a baseline do texto
+                # target_obj.y é o topo da bounding box
+                # Baseline ≈ topo + (altura * 0.82) para fontes padrão
+                baseline_y = target_obj.y + (original_height * 0.82)
+
+                # Usar objeto Font diretamente (não nome!)
+                # Isso é a chave para preservar fontes customizadas
+                if font_loaded:
+                    # Usar fonte carregada (do sistema ou extraída)
+                    # TextWriter.append() não aceita 'color' e 'rotate' diretamente
+                    # Usar apenas: pos, text, font, fontsize
+                    tw.append(
+                        pos=(target_obj.x, baseline_y),
+                        text=final_content,
+                        font=font_loaded,  # Objeto Font, não string!
+                        fontsize=final_font_size
+                    )
+                    # Aplicar cor após append se necessário
+                    # TextWriter usa fill_color separadamente
+                    tw.fill_opacity = 1.0
+                else:
+                    # Fallback: usar fonte padrão Helvetica
+                    fallback_font = fitz.Font("helv")
+                    tw.append(
+                        pos=(target_obj.x, baseline_y),
+                        text=final_content,
+                        font=fallback_font,
+                        fontsize=final_font_size
+                    )
+                    font_fallback_occurred = True
+                    font_source = "fallback"
+                    font_used_source = "fallback padrão (Helvetica)"
+
+                # Escrever texto na página
+                tw.write_text(page)
+
+            except Exception as e:
+                # Se TextWriter falhar, tentar insert_text como último recurso
+                # Logger não tem método error, usar log_operation com status error
+                try:
+                    baseline_y = target_obj.y + (original_height * 0.82)
+                    page.insert_text(
+                        point=(target_obj.x, baseline_y),
+                        text=final_content,
+                        fontsize=final_font_size,
+                        fontname="helv",  # Fallback seguro
+                        color=color_rgb,
+                        rotate=final_rotation
+                    )
+                    font_fallback_occurred = True
+                    font_source = "fallback"
+                    font_used_source = "fallback padrão (Helvetica) - TextWriter falhou"
+                except Exception as e2:
+                    raise Exception(f"Erro crítico ao inserir texto: {e2}")
 
         # Salvar PDF APENAS UMA VEZ após todas as edições (em arquivo temporário diferente do que foi aberto)
         # PyMuPDF requer salvar em arquivo diferente quando incremental=False
@@ -389,7 +653,120 @@ def _edit_text_all_occurrences(
         except:
             pass
 
-    # Log da operação
+    # Fase 5: Detectar fallback de fonte após edição e aplicar fallback automático
+    engine_results = []
+    start_time_pymupdf = time.time()
+
+    try:
+        # Extrair objetos MODIFICADOS após edição para comparação
+        modified_text_objects = []
+        with PDFRepository(output_path) as repo:
+            modified_text_objects = repo.extract_text_objects()
+
+        # Verificar preservação de fontes após edição com PyMuPDF
+        font_comparisons = engine_manager.detect_font_fallback(
+            original_objects=original_text_objects,
+            modified_objects=modified_text_objects,
+            target_object_ids=target_object_ids,
+            search_term=search_term,  # Texto buscado para melhor correspondência
+            new_content=new_content   # Novo conteúdo para validação
+        )
+
+        fallback_detected = any(comp.font_fallback_detected for comp in font_comparisons)
+        execution_time_pymupdf = (time.time() - start_time_pymupdf) * 1000
+
+        # Criar resultado do PyMuPDF
+        pymupdf_result = EngineResult(
+            engine=EngineType.PYMUPDF,
+            success=True,
+            output_path=output_path,
+            font_comparisons=font_comparisons,
+            execution_time_ms=execution_time_pymupdf
+        )
+        engine_manager.attempts.append(pymupdf_result)
+        engine_results.append(pymupdf_result)
+
+        # Se houve fallback e prefer_engine é pymupdf, tentar pypdf automaticamente
+        if fallback_detected and prefer_engine.lower() == "pymupdf":
+            logger.log_operation(
+                operation_type="edit-text-font-fallback-detected",
+                input_file=pdf_path,
+                output_file=output_path,
+                parameters={
+                    "fallback_detected": True,
+                    "occurrences_with_fallback": sum(1 for comp in font_comparisons if comp.font_fallback_detected),
+                    "attempting_fallback_to": "pypdf"
+                },
+                status="info",
+                notes=f"Fallback de fonte detectado. Tentando com pypdf automaticamente..."
+            )
+
+            # Tentar edição com pypdf
+            pypdf_result = engine_manager.edit_text_with_pypdf(
+                pdf_path=pdf_path,
+                output_path=f"{output_path}.pypdf",  # Arquivo temporário para pypdf
+                search_term=search_term,
+                new_content=new_content,
+                target_object_ids=target_object_ids,
+                original_objects=original_text_objects
+            )
+            engine_manager.attempts.append(pypdf_result)
+            engine_results.append(pypdf_result)
+
+            # Se pypdf teve sucesso e preservou fontes, usar esse resultado
+            if pypdf_result.success and not pypdf_result.any_font_fallback:
+                # Mover arquivo do pypdf para o destino final
+                try:
+                    if Path(output_path).exists():
+                        Path(output_path).unlink()
+                    if Path(f"{output_path}.pypdf").exists():
+                        shutil.move(f"{output_path}.pypdf", output_path)
+                        logger.log_operation(
+                            operation_type="edit-text-engine-fallback-success",
+                            input_file=pdf_path,
+                            output_file=output_path,
+                            parameters={"engine_used": "pypdf", "font_preserved": True},
+                            status="success",
+                            notes="Fallback para pypdf preservou fontes com sucesso"
+                        )
+                except Exception as e:
+                    logger.log_operation(
+                        operation_type="edit-text-engine-fallback-move-error",
+                        input_file=pdf_path,
+                        output_file=output_path,
+                        parameters={"error": str(e)},
+                        status="warning",
+                        notes=f"Erro ao mover arquivo do pypdf: {str(e)}"
+                    )
+            elif not pypdf_result.success:
+                # Log de falha do pypdf
+                logger.log_operation(
+                    operation_type="edit-text-fallback-failed",
+                    input_file=pdf_path,
+                    output_file=output_path,
+                    parameters={"fallback_attempted": True, "engine": "pypdf"},
+                    result={"success": False, "error": pypdf_result.error},
+                    status="warning",
+                    notes=f"Fallback para pypdf falhou: {pypdf_result.error}"
+                )
+                # Limpar arquivo temporário do pypdf se existir
+                try:
+                    if Path(f"{output_path}.pypdf").exists():
+                        Path(f"{output_path}.pypdf").unlink()
+                except:
+                    pass
+    except Exception as e:
+        # Se houver erro na detecção, continuar sem fallback
+        logger.log_operation(
+            operation_type="edit-text-font-detection",
+            input_file=pdf_path,
+            output_file=output_path,
+            parameters={"error": str(e)},
+            status="warning",
+            notes=f"Erro ao detectar fallback de fonte: {str(e)}"
+        )
+
+    # Log da operação principal
     logger.log_operation(
         operation_type="edit-text",
         input_file=pdf_path,
@@ -398,6 +775,7 @@ def _edit_text_all_occurrences(
             "search_term": search_term,
             "new_content": new_content,
             "all_occurrences": True,
+            "prefer_engine": prefer_engine,
             "align": align,
             "pad": pad,
             "font_name": font_name,
@@ -409,12 +787,51 @@ def _edit_text_all_occurrences(
             "status": "success",
             "occurrences_processed": occurrences_processed,
             "occurrences_details": occurrences_details,
+            "engine_results": [r.to_dict() for r in engine_results] if engine_results else [],
             "backup": backup_path
         },
         notes=f"Processadas {occurrences_processed} ocorrências do texto '{search_term}'"
     )
 
-    return output_path, occurrences_details
+    # Criar log de auditoria (Fase 5)
+    if engine_results:
+        audit_log = create_audit_log(
+            pdf_path=pdf_path,
+            output_path=output_path,
+            engine_results=engine_results,
+            operation_type="edit-text-all-occurrences"
+        )
+        # Salvar log de auditoria em arquivo separado
+        audit_log_path = Path("logs") / f"audit_{audit_log['operation_id']}.json"
+        audit_log_path.parent.mkdir(exist_ok=True)
+        with open(audit_log_path, "w", encoding="utf-8") as f:
+            json.dump(audit_log, f, ensure_ascii=False, indent=2)
+
+    # Verificar se deve bloquear operação em modo strict
+    if strict_fonts and font_manager.should_block_operation(strict_mode=True):
+        # Remover arquivo de saída se bloqueado
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+        # Gerar mensagem de erro com fontes faltantes
+        error_msg = font_manager.get_missing_fonts_summary()
+        raise PDFCliException(
+            f"Operação bloqueada em modo --strict-fonts.\n{error_msg}"
+        )
+
+    # Exibir aviso sobre fontes faltantes (se houver)
+    if font_manager.has_missing_fonts():
+        print(font_manager.get_missing_fonts_summary())
+
+    details_dict = {
+        "occurrences_processed": occurrences_processed,
+        "details": occurrences_details,
+        "total_occurrences": len(occurrences_details),
+        "engine_used": engine_results[-1].engine.value if engine_results else "pymupdf",
+        "font_fallback_detected": any(r.any_font_fallback for r in engine_results) if engine_results else False,
+        "font_warnings": font_manager.get_summary_dict()
+    }
+    return output_path, details_dict
 
 
 def edit_text(
@@ -433,8 +850,11 @@ def edit_text(
     color: Optional[str] = None,
     rotation: Optional[float] = None,
     create_backup: bool = True,
-    all_occurrences: bool = False
-) -> str:
+    all_occurrences: bool = False,
+    prefer_engine: str = "pymupdf",
+    feedback_callback: Optional[Callable] = None,
+    strict_fonts: bool = False
+) -> Union[str, Tuple[str, Dict[str, Any]]]:
     """
     Edita um objeto de texto no PDF.
 
@@ -477,7 +897,7 @@ def edit_text(
 
     # Se all_occurrences está ativo e search_term foi fornecido, processar todas as ocorrências
     if all_occurrences and search_term and not object_id:
-        result_path, occurrences_details = _edit_text_all_occurrences(
+        result_path, occurrences_details_dict = _edit_text_all_occurrences(
             pdf_path=pdf_path,
             output_path=output_path,
             search_term=search_term,
@@ -488,11 +908,18 @@ def edit_text(
             font_size=font_size,
             color=color,
             rotation=rotation,
-            create_backup=False  # Já criamos o backup acima
+            create_backup=False,  # Já criamos o backup acima
+            prefer_engine=prefer_engine,
+            feedback_callback=feedback_callback,
+            strict_fonts=strict_fonts
         )
-        # Armazenar detalhes em atributo da função para acesso externo
-        edit_text._last_occurrences_details = occurrences_details
-        return result_path
+        # Retornar tuple com caminho e detalhes
+        details = {
+            "occurrences_processed": occurrences_details_dict.get("occurrences_processed", len(occurrences_details_dict.get("details", []))),
+            "details": occurrences_details_dict.get("details", occurrences_details_dict if isinstance(occurrences_details_dict, list) else []),
+            "total_occurrences": len(occurrences_details_dict.get("details", occurrences_details_dict if isinstance(occurrences_details_dict, list) else []))
+        }
+        return result_path, details
 
     with PDFRepository(pdf_path) as repo:
         # Extrair textos

@@ -80,6 +80,7 @@ def main(
     """
     Comandos disponíveis:
         export-objects     - Extrai objetos do PDF para JSON
+        list-fonts         - Lista todas as fontes e variantes usadas no PDF
         edit-text          - Edita objeto de texto
         edit-table         - Edita tabela
         replace-image      - Substitui imagem
@@ -105,6 +106,7 @@ def export_objects(
     pdf_path: str = typer.Argument(..., help="Caminho para o arquivo PDF"),
     output: str = typer.Argument(..., help="Caminho de saída para o JSON"),
     types: Optional[str] = typer.Option(None, "--types", "-t", help="Tipos de objetos a exportar (ex: text,image,table)"),
+    include_fonts: bool = typer.Option(False, "--include-fonts", help="Inclui informações de fontes no JSON exportado"),
     verbose: bool = typer.Option(False, "--verbose", help="Exibe informações detalhadas"),
 ) -> None:
     """
@@ -121,17 +123,164 @@ def export_objects(
     try:
         type_list = types.split(",") if types else None
 
-        stats = services.export_objects(pdf_path, output, type_list)
+        stats = services.export_objects(pdf_path, output, type_list, include_fonts=include_fonts)
 
         console.print(f"[green]✓[/green] Objetos exportados com sucesso!")
         console.print(f"   Arquivo: {output}")
         console.print(f"   Total de objetos: {stats['total_objects']}")
+
+        if include_fonts and 'fonts' in stats:
+            console.print(f"   Total de fontes: {stats['fonts']['total_fonts']}")
 
         if verbose:
             console.print(f"\n   Por tipo:")
             for obj_type, count in stats['by_type'].items():
                 if count > 0:
                     console.print(f"     {obj_type}: {count}")
+    except PDFCliException as e:
+        console.print(f"[bold red]Erro:[/bold red] {str(e)}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[bold red]Erro inesperado:[/bold red] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
+@app.command("list-fonts")
+def list_fonts(
+    pdf_path: str = typer.Argument(..., help="Caminho para o arquivo PDF"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Caminho de saída para JSON (opcional)"),
+    verbose: bool = typer.Option(False, "--verbose", help="Exibe informações detalhadas"),
+) -> None:
+    """
+    Lista todas as fontes e suas variantes usadas no PDF.
+
+    Mostra informações sobre cada fonte:
+    - Nome da fonte
+    - Variantes (Bold, Italic, Narrow, etc.)
+    - Se está embeddada no PDF
+    - Tamanhos usados
+    - Páginas onde é usada
+
+    Exemplo:
+        pdf-cli list-fonts documento.pdf
+        pdf-cli list-fonts documento.pdf --output fontes.json
+        pdf-cli list-fonts documento.pdf --verbose
+    """
+    try:
+        from app.pdf_repo import PDFRepository
+
+        with PDFRepository(pdf_path) as repo:
+            # Extrair fontes do PDF
+            fonts_dict = repo.extract_fonts()
+
+            # Extrair textos para obter estatísticas de uso
+            text_objects = repo.extract_text_objects()
+
+            # Estatísticas de uso por fonte
+            font_stats = {}
+            for text_obj in text_objects:
+                font_name = text_obj.font_name
+                if font_name not in font_stats:
+                    font_stats[font_name] = {
+                        "name": font_name,
+                        "pages": set(),
+                        "sizes": set(),
+                        "occurrences": 0
+                    }
+                font_stats[font_name]["pages"].add(text_obj.page)
+                font_stats[font_name]["sizes"].add(text_obj.font_size)
+                font_stats[font_name]["occurrences"] += 1
+
+            # Preparar dados para exibição
+            fonts_info = []
+            for font_key, font_data in fonts_dict.items():
+                usage = font_stats.get(font_key, {})
+
+                # Detectar variantes adicionais
+                name_upper = font_data.name.upper() if font_data.name else ""
+                variants_detected = []
+                if font_data.is_bold:
+                    variants_detected.append("Bold")
+                if font_data.is_italic:
+                    variants_detected.append("Italic")
+                if "NARROW" in name_upper:
+                    variants_detected.append("Narrow")
+                if "CONDENSED" in name_upper:
+                    variants_detected.append("Condensed")
+                if "LIGHT" in name_upper:
+                    variants_detected.append("Light")
+                if "BLACK" in name_upper:
+                    variants_detected.append("Black")
+
+                font_info = {
+                    "name": font_data.name,
+                    "base_font": font_data.base_font,
+                    "variants": variants_detected,
+                    "embedded": font_data.font_file_path is not None,
+                    "encoding": getattr(font_data, 'encoding', ''),
+                    "xref": getattr(font_data, 'xref', None),
+                    "usage": {
+                        "occurrences": usage.get("occurrences", 0),
+                        "pages": sorted(list(usage.get("pages", set()))),
+                        "sizes": sorted(list(usage.get("sizes", set())))
+                    }
+                }
+                fonts_info.append(font_info)
+
+            # Ordenar por nome
+            fonts_info.sort(key=lambda x: x["name"] or "")
+
+            # Exibir no console
+            console.print(f"\n[bold cyan]📚 Fontes encontradas no PDF:[/bold cyan] {len(fonts_info)}\n")
+
+            for i, font_info in enumerate(fonts_info, 1):
+                variant_str = f" ([{', '.join(font_info['variants'])}])" if font_info['variants'] else ""
+                embedded_str = " [green]✓ embeddada[/green]" if font_info["embedded"] else " [yellow]⚠ não embeddada[/yellow]"
+
+                console.print(f"{i}. [bold]{font_info['name'] or 'N/A'}[/bold]{variant_str}{embedded_str}")
+
+                if font_info["usage"]["occurrences"] > 0:
+                    console.print(f"   Usada em: {font_info['usage']['occurrences']} ocorrência(s)")
+                    if verbose or len(font_info['usage']['pages']) <= 10:
+                        console.print(f"   Páginas: {', '.join(map(str, font_info['usage']['pages']))}")
+                    else:
+                        pages_str = f"{', '.join(map(str, font_info['usage']['pages'][:5]))}, ... (+{len(font_info['usage']['pages'])-5} mais)"
+                        console.print(f"   Páginas: {pages_str}")
+
+                    if font_info['usage']['sizes']:
+                        sizes_str = ", ".join([f"{s}pt" for s in font_info['usage']['sizes'][:10]])
+                        if len(font_info['usage']['sizes']) > 10:
+                            sizes_str += f" (+{len(font_info['usage']['sizes'])-10} mais)"
+                        console.print(f"   Tamanhos: {sizes_str}")
+                else:
+                    console.print(f"   [dim]Não usada em nenhum objeto de texto extraído[/dim]")
+
+                if font_info["base_font"] and font_info["base_font"] != font_info["name"]:
+                    console.print(f"   Base: {font_info['base_font']}")
+
+                if verbose and font_info["encoding"]:
+                    console.print(f"   Encoding: {font_info['encoding']}")
+
+                if verbose and font_info["xref"]:
+                    console.print(f"   XRef: {font_info['xref']}")
+
+                console.print()
+
+            # Salvar em JSON se solicitado
+            if output:
+                import json
+                output_data = {
+                    "pdf_path": pdf_path,
+                    "total_fonts": len(fonts_info),
+                    "fonts": fonts_info
+                }
+                with open(output, "w", encoding="utf-8") as f:
+                    json.dump(output_data, f, indent=2, ensure_ascii=False)
+                console.print(f"[green]✓[/green] Informações salvas em: {output}")
+
     except PDFCliException as e:
         console.print(f"[bold red]Erro:[/bold red] {str(e)}")
         raise typer.Exit(1)
@@ -159,6 +308,7 @@ def edit_text(
     color: Optional[str] = typer.Option(None, "--color", help="Cor do texto (hex)"),
     rotation: Optional[float] = typer.Option(None, "--rotation", help="Rotação em graus"),
     all_occurrences: bool = typer.Option(False, "--all-occurrences", help="Substitui todas as ocorrências do texto (apenas com --content)"),
+    prefer_engine: str = typer.Option("pymupdf", "--prefer-engine", help="Engine preferido: 'pymupdf' (padrão) ou 'pypdf' (Fase 5)"),
     force: bool = typer.Option(False, "--force", help="Sobrescreve sem criar backup"),
     verbose: bool = typer.Option(False, "--verbose", help="Exibe informações detalhadas"),
 ) -> None:
@@ -174,60 +324,67 @@ def edit_text(
         pdf-cli edit-text input.pdf output.pdf --content "ALCANTARA" --new-content "ALCÂNTARA" --all-occurrences
     """
     try:
-        result_path = services.edit_text(
-            pdf_path=pdf_path,
-            output_path=output,
-            object_id=id,
-            search_content=content,
-            new_content=new_content,
-            align=align,
-            pad=pad,
-            x=x,
-            y=y,
-            font_name=font_name,
-            font_size=font_size,
-            color=color,
-            rotation=rotation,
-            create_backup=not force,
-            all_occurrences=all_occurrences
-        )
-
         if all_occurrences:
-            # Exibir feedback detalhado para cada ocorrência processada
-            occurrences_details = getattr(services.edit_text, '_last_occurrences_details', [])
+            console.print("\n[bold yellow]Processando ocorrências...[/bold yellow]\n")
+            result_path, details = services.edit_text(
+                pdf_path=pdf_path,
+                output_path=output,
+                object_id=id,
+                search_content=content,
+                new_content=new_content,
+                align=align,
+                pad=pad,
+                x=x,
+                y=y,
+                font_name=font_name,
+                font_size=font_size,
+                color=color,
+                rotation=rotation,
+                create_backup=not force,
+                all_occurrences=all_occurrences,
+                prefer_engine=prefer_engine,
+                feedback_callback=lambda detail: console.print(
+                    f"┌─ Ocorrência (processando...)\n"
+                    f"│ ID: {detail['id']}\n"
+                    f"│ Página: {detail['page']}  |  Posição: ({detail['coordinates']['x']:.1f}, {detail['coordinates']['y']:.1f})  |  Tamanho: {detail['coordinates']['width']:.1f}×{detail['coordinates']['height']:.1f}\n"
+                    f"│ Modificado: '{detail['original_content']}' → '{detail['new_content']}'\n"
+                    f"│ Fonte original: {detail['font_original']} ({detail['font_size']}pt)\n"
+                    f"│ {'⚠' if detail['font_fallback'] else '✓'} Fonte usada: {detail['font_used']} ({detail['font_source']})\n"
+                    f"└─\n"
+                )
+            )
+            occurrences_processed = details.get('occurrences_processed', 0)
+            console.print(f"[green]✓[/green] Total: {occurrences_processed} ocorrência(s) editada(s) com sucesso!")
+            console.print(f"   Arquivo: {result_path}")
 
-            console.print(f"\n[bold cyan]Processando {len(occurrences_details)} ocorrência(s)...[/bold cyan]\n")
-            for i, details in enumerate(occurrences_details, 1):
-                console.print(f"[bold blue]┌─[/bold blue] [bold]Ocorrência {i}/{len(occurrences_details)}[/bold]")
-                console.print(f"[bold blue]│[/bold blue] [dim]ID:[/dim] {details['id']}")
-                console.print(f"[bold blue]│[/bold blue] [dim]Página:[/dim] {details['page']}  |  [dim]Posição:[/dim] ({details['coordinates']['x']:.1f}, {details['coordinates']['y']:.1f})  |  [dim]Tamanho:[/dim] {details['coordinates']['width']:.1f}×{details['coordinates']['height']:.1f}")
-
-                # Mostrar mudanças de conteúdo
-                if details['original_content'] != details['new_content']:
-                    original_preview = (details['original_content'][:50] + "...") if len(details['original_content']) > 50 else details['original_content']
-                    new_preview = (details['new_content'][:50] + "...") if len(details['new_content']) > 50 else details['new_content']
-                    console.print(f"[bold blue]│[/bold blue] [dim]Modificado:[/dim] '{original_preview}' [yellow]→[/yellow] '{new_preview}'")
-
-                # Mostrar informações de fonte
-                font_status_icon = "[yellow]⚠[/yellow]" if details['font_fallback'] else "[green]✓[/green]"
-                console.print(f"[bold blue]│[/bold blue] [dim]Fonte original:[/dim] {details['font_original']} ({details['font_size']}pt)")
-                console.print(f"[bold blue]│[/bold blue] {font_status_icon} [dim]Fonte usada:[/dim] {details['font_used']} [dim]({details['font_source']})[/dim]")
-
-                # Mostrar outras mudanças (se houver além do conteúdo)
-                other_changes = [c for c in details['changes'] if 'Conteúdo:' not in c]
-                if other_changes:
-                    for change in other_changes:
-                        console.print(f"[bold blue]│[/bold blue]   [dim]•[/dim] {change}")
-
-                console.print(f"[bold blue]└─[/bold blue]")
-                if i < len(occurrences_details):
-                    console.print()  # Linha em branco entre ocorrências
-
-            console.print(f"\n[green]✓[/green] [bold]Total: {len(occurrences_details)} ocorrência(s) editada(s) com sucesso![/bold]")
+            # Mostrar informações sobre engine usado (Fase 5)
+            if details.get("engine_used"):
+                engine_used = details["engine_used"]
+                console.print(f"[dim]Engine usado: {engine_used}[/dim]")
+                if details.get("font_fallback_detected"):
+                    console.print(f"[yellow]⚠[/yellow] [dim]Fallback de fonte detectado. Tente usar --prefer-engine pypdf se disponível.[/dim]")
         else:
+            # Caso de edição única (não --all-occurrences)
+            result_path = services.edit_text(
+                pdf_path=pdf_path,
+                output_path=output,
+                object_id=id,
+                search_content=content,
+                new_content=new_content,
+                align=align,
+                pad=pad,
+                x=x,
+                y=y,
+                font_name=font_name,
+                font_size=font_size,
+                color=color,
+                rotation=rotation,
+                create_backup=not force,
+                all_occurrences=all_occurrences,
+                prefer_engine=prefer_engine
+            )
             console.print(f"[green]✓[/green] Texto editado com sucesso!")
-
-        console.print(f"   [dim]Arquivo:[/dim] {result_path}")
+            console.print(f"   Arquivo: {result_path}")
     except PDFCliException as e:
         console.print(f"[bold red]Erro:[/bold red] {str(e)}")
         raise typer.Exit(1)

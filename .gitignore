@@ -1,6 +1,7 @@
 # Específicos do projeto PDF-cli
 
 examples/
+outputs/
 
 
 # Byte-compiled / optimized / DLL files
