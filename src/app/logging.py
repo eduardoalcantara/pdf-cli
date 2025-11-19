@@ -117,10 +117,15 @@ class OperationLogger:
         notes: Optional[str] = None,
         status: str = "success",
         error: Optional[str] = None,
-        save: bool = True
+        save: bool = True,
+        object_ids: Optional[List[str]] = None,
+        suggestions: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Cria e salva um log de operação (método conveniente).
+
+        Conforme Fase 4: logs devem incluir IDs de objetos alterados e
+        sugestões automáticas para auditoria completa.
 
         Args:
             operation_type: Tipo da operação.
@@ -129,9 +134,11 @@ class OperationLogger:
             parameters: Parâmetros utilizados.
             result: Resultado da operação.
             notes: Notas adicionais.
-            status: Status ("success" ou "error").
+            status: Status ("success", "error", "warning").
             error: Mensagem de erro.
             save: Se True, salva o log em arquivo.
+            object_ids: Lista de IDs de objetos alterados/criados.
+            suggestions: Lista de sugestões automáticas para o usuário.
 
         Returns:
             dict: Log criado.
@@ -147,7 +154,19 @@ class OperationLogger:
             error=error
         )
 
+        # Adiciona campos de auditoria (Fase 4)
+        if object_ids:
+            log["object_ids"] = object_ids
+        if suggestions:
+            log["suggestions"] = suggestions
+
         if save:
+            # Salva em formato JSONL para fácil processamento e auditoria
+            log_file = self.log_dir / "operations.jsonl"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(log, ensure_ascii=False) + "\n")
+
+            # Também salva arquivo individual para referência rápida
             log_path = self.save_log(log)
             log["log_file"] = log_path
 

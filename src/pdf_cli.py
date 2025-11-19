@@ -91,7 +91,7 @@ def main(
         split              - Divide PDF em múltiplos arquivos
     """
     if version:
-        console.print("[bold cyan]PDF-cli[/bold cyan] versão 0.3.0 (Fase 3)")
+        console.print("[bold cyan]PDF-cli[/bold cyan] versão 0.4.0 (Fase 4)")
         raise typer.Exit()
 
     if ctx.invoked_subcommand is None:

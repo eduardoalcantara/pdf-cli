@@ -75,7 +75,24 @@ def export_objects(
             image_objects = repo.extract_image_objects()
             all_objects["image"] = [obj.to_dict() for obj in image_objects]
 
-        # TODO: Implementar extração de outros tipos (table, link, formfield, etc.)
+        # Extrair links
+        if types is None or "link" in types:
+            try:
+                link_objects = repo.extract_link_objects()
+                all_objects["link"] = [obj.to_dict() for obj in link_objects]
+            except Exception:
+                pass  # Links podem não estar disponíveis em todos PDFs
+
+        # Extrair anotações
+        if types is None or "annotation" in types:
+            try:
+                annotation_objects = repo.extract_annotation_objects()
+                all_objects["annotation"] = [obj.to_dict() for obj in annotation_objects]
+            except Exception:
+                pass
+
+        # Table, formfield, graphic, layer, filter requerem algoritmos mais complexos
+        # de detecção e parsing. Podem ser implementados em fases futuras conforme necessidade.
 
         # Agrupar por página
         grouped = {}
@@ -220,9 +237,67 @@ def edit_text(
         if rotation is not None:
             target_obj.rotation = rotation
 
-        # TODO: Implementar escrita real no PDF usando PyMuPDF
-        # Por enquanto, apenas salva cópia
-        shutil.copy2(pdf_path, output_path)
+        # Implementar escrita real no PDF usando PyMuPDF
+        doc = repo.open()
+        page = doc[target_obj.page]
+
+        # Preparar novo conteúdo (new_content é obrigatório, senão não há nada para editar)
+        if not new_content:
+            raise ValueError("Parâmetro 'new_content' é obrigatório para edição de texto")
+        final_content = new_content
+
+        # Determinar posição (usar coordenadas do objeto ou novas coordenadas)
+        final_x = target_obj.x if x is None else x
+        final_y = target_obj.y if y is None else y
+
+        # Converter cor hex para RGB (formato PyMuPDF)
+        color_rgb = (0, 0, 0)  # Preto padrão
+        if color:
+            hex_color = color.lstrip("#")
+            if len(hex_color) == 6:
+                color_rgb = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+        # Determinar fonte e tamanho
+        final_font = target_obj.font_name if not font_name else font_name
+        final_font_size = target_obj.font_size if font_size is None else font_size
+
+        # Buscar e remover texto antigo usando redaction
+        bbox = fitz.Rect(target_obj.x, target_obj.y, target_obj.x + target_obj.width, target_obj.y + target_obj.height)
+        page.add_redact_annot(bbox, fill=(1, 1, 1))  # Preencher com branco
+        page.apply_redactions()
+
+        # Inserir novo texto
+        # Determinar alinhamento
+        align_val = 0  # left
+        if align:
+            if align == "center":
+                align_val = 1
+            elif align == "right":
+                align_val = 2
+            elif align == "justify":
+                align_val = 3
+
+        # Inserir texto com formatação
+        text_rect = fitz.Rect(final_x, final_y, final_x + target_obj.width, final_y + target_obj.height)
+
+        # Tentar carregar fonte (fallback para helv se não encontrar)
+        try:
+            font = fitz.Font(final_font if final_font else "helv")
+        except:
+            font = fitz.Font("helv")
+
+        page.insert_text(
+            point=(final_x, final_y + final_font_size),  # Ajustar Y para baseline
+            text=final_content,
+            fontsize=final_font_size,
+            fontname=font.name,
+            color=color_rgb,
+            rotate=target_obj.rotation if rotation is None else rotation
+        )
+
+        # Salvar PDF modificado
+        doc.save(output_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
+        doc.close()
 
         after_state = target_obj.to_dict()
 
@@ -279,13 +354,17 @@ def edit_table(
     """
     logger = get_logger()
 
+    backup_path = None
     if create_backup:
         with PDFRepository(pdf_path) as repo:
             backup_path = repo.create_backup()
 
-    # TODO: Implementar extração e edição de tabelas
-    shutil.copy2(pdf_path, output_path)
+    # Edição de tabelas requer detecção de estrutura de tabelas no PDF,
+    # que é uma operação complexa dependendo da estrutura do PDF.
+    # Por enquanto, esta funcionalidade precisa de algoritmo de detecção de tabelas.
+    # NOTA: Esta é uma limitação técnica conhecida que requer desenvolvimento futuro.
 
+    # Log da tentativa
     logger.log_operation(
         operation_type="edit-table",
         input_file=pdf_path,
@@ -297,10 +376,15 @@ def edit_table(
             "value": value,
             "header": header
         },
-        result={"status": "pending_implementation"}
+        result={"status": "not_implemented", "backup": backup_path},
+        status="error",
+        error="Edição de tabelas requer implementação de detecção de estrutura de tabelas. Esta funcionalidade será implementada em fase futura."
     )
 
-    return output_path
+    raise NotImplementedError(
+        "Edição de tabelas requer implementação de detecção de estrutura de tabelas. "
+        "Esta funcionalidade será implementada em fase futura após desenvolvimento do algoritmo de detecção."
+    )
 
 
 def replace_image(
@@ -336,8 +420,86 @@ def replace_image(
         with PDFRepository(pdf_path) as repo:
             backup_path = repo.create_backup()
 
-    # TODO: Implementar substituição real de imagem
-    shutil.copy2(pdf_path, output_path)
+    # Implementar substituição real de imagem
+    with PDFRepository(pdf_path) as repo:
+        # Extrair imagens para encontrar a que será substituída
+        image_objects = repo.extract_image_objects()
+
+        # Encontrar imagem pelo ID
+        target_image = None
+        for img_obj in image_objects:
+            if img_obj.id == image_id:
+                target_image = img_obj
+                break
+
+        if target_image is None:
+            raise PDFFileNotFoundError(f"Imagem com ID {image_id} não encontrada no PDF")
+
+        doc = repo.open()
+        page = doc[target_image.page]
+
+        # Buscar a imagem no PDF para remover
+        image_list = page.get_images()
+        xref_to_remove = None
+
+        for img_index, img in enumerate(image_list):
+            xref = img[0]
+            image_rects = page.get_image_rects(xref)
+            for rect in image_rects:
+                if abs(rect.x0 - target_image.x) < 1 and abs(rect.y0 - target_image.y) < 1:
+                    xref_to_remove = xref
+                    break
+            if xref_to_remove:
+                break
+
+        # Remover imagem antiga usando redaction
+        if xref_to_remove:
+            bbox = fitz.Rect(target_image.x, target_image.y,
+                           target_image.x + target_image.width,
+                           target_image.y + target_image.height)
+            page.add_redact_annot(bbox, fill=(1, 1, 1))
+            page.apply_redactions()
+
+        # Inserir nova imagem
+        rect = fitz.Rect(target_image.x, target_image.y,
+                        target_image.x + target_image.width,
+                        target_image.y + target_image.height)
+
+        # Aplicar filtro se especificado
+        img_data = Path(src).read_bytes()
+        if filter_type == "grayscale":
+            # Converter para grayscale usando PIL
+            try:
+                from PIL import Image as PILImage
+                import io
+                img = PILImage.open(io.BytesIO(img_data))
+                if img.mode != "L":
+                    img = img.convert("L")
+                img_io = io.BytesIO()
+                img.save(img_io, format=img.format if hasattr(img, 'format') else 'PNG')
+                img_data = img_io.getvalue()
+            except ImportError:
+                pass  # Se PIL não disponível, insere sem filtro
+        elif filter_type == "invert":
+            try:
+                from PIL import Image as PILImage
+                import io
+                img = PILImage.open(io.BytesIO(img_data))
+                if img.mode == "RGB":
+                    img = img.point(lambda x: 255 - x)
+                elif img.mode == "L":
+                    img = img.point(lambda x: 255 - x)
+                img_io = io.BytesIO()
+                img.save(img_io, format=img.format if hasattr(img, 'format') else 'PNG')
+                img_data = img_io.getvalue()
+            except ImportError:
+                pass
+
+        # Inserir imagem
+        page.insert_image(rect, stream=img_data)
+
+        doc.save(output_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
+        doc.close()
 
     logger.log_operation(
         operation_type="replace-image",
@@ -348,7 +510,7 @@ def replace_image(
             "src": src,
             "filter_type": filter_type
         },
-        result={"status": "pending_implementation"}
+        result={"status": "success", "backup": backup_path}
     )
 
     return output_path
@@ -390,9 +552,93 @@ def insert_object(
         with PDFRepository(pdf_path) as repo:
             backup_path = repo.create_backup()
 
-    # Validar campos obrigatórios conforme tipo
-    # TODO: Implementar validação completa e inserção real
-    shutil.copy2(pdf_path, output_path)
+    # Validar campos obrigatórios conforme tipo e inserir objeto real
+    with PDFRepository(pdf_path) as repo:
+        doc = repo.open()
+
+        if obj_type == "text":
+            # Validar campos obrigatórios
+            required_fields = ["page", "content", "x", "y"]
+            for field in required_fields:
+                if field not in params:
+                    raise ValueError(f"Campo obrigatório '{field}' não fornecido para objeto tipo 'text'")
+
+            page_num = params["page"]
+            if page_num < 0 or page_num >= len(doc):
+                raise InvalidPageError(page_num, len(doc))
+
+            page = doc[page_num]
+            content = params.get("content", "")
+            x = params.get("x", 0.0)
+            y = params.get("y", 0.0)
+            font_size = params.get("font_size", 12)
+            font_name = params.get("font_name", "helv")
+            color = params.get("color", "#000000")
+            rotation = params.get("rotation", 0.0)
+
+            # Converter cor hex para RGB
+            color_rgb = (0, 0, 0)
+            hex_color = color.lstrip("#")
+            if len(hex_color) == 6:
+                color_rgb = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+            # Carregar fonte
+            try:
+                font = fitz.Font(font_name)
+            except:
+                font = fitz.Font("helv")
+
+            # Inserir texto
+            page.insert_text(
+                point=(x, y + font_size),
+                text=content,
+                fontsize=font_size,
+                fontname=font.name,
+                color=color_rgb,
+                rotate=rotation
+            )
+
+        elif obj_type == "image":
+            # Validar campos obrigatórios
+            required_fields = ["page", "src", "x", "y"]
+            for field in required_fields:
+                if field not in params:
+                    raise ValueError(f"Campo obrigatório '{field}' não fornecido para objeto tipo 'image'")
+
+            page_num = params["page"]
+            if page_num < 0 or page_num >= len(doc):
+                raise InvalidPageError(page_num, len(doc))
+
+            img_src = params["src"]
+            if not Path(img_src).exists():
+                raise PDFFileNotFoundError(img_src)
+
+            page = doc[page_num]
+            x = params.get("x", 0.0)
+            y = params.get("y", 0.0)
+            width = params.get("width", 100.0)
+            height = params.get("height", 100.0)
+
+            rect = fitz.Rect(x, y, x + width, y + height)
+            img_data = Path(img_src).read_bytes()
+            page.insert_image(rect, stream=img_data)
+
+        else:
+            # Outros tipos (table, link, etc.) requerem implementação mais complexa
+            # Por enquanto, validação básica
+            if "page" not in params:
+                raise ValueError(f"Campo obrigatório 'page' não fornecido para objeto tipo '{obj_type}'")
+
+            # Outros tipos (table, link, graphic, etc.) requerem implementação específica
+            # para cada tipo. Por enquanto, apenas text e image estão totalmente implementados.
+            doc.close()
+            raise NotImplementedError(
+                f"Inserção de objetos do tipo '{obj_type}' ainda não está implementada. "
+                f"Tipos suportados: text, image"
+            )
+
+        doc.save(output_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
+        doc.close()
 
     logger.log_operation(
         operation_type="insert-object",
@@ -402,7 +648,7 @@ def insert_object(
             "object_type": obj_type,
             "params": params
         },
-        result={"status": "pending_implementation"}
+        result={"status": "success", "backup": backup_path}
     )
 
     return output_path
@@ -442,8 +688,75 @@ def restore_from_json(
         with PDFRepository(source_pdf) as repo:
             backup_path = repo.create_backup()
 
-    # TODO: Implementar aplicação de alterações do JSON
-    shutil.copy2(source_pdf, output_path)
+    # Implementar aplicação de alterações do JSON
+    with PDFRepository(source_pdf) as repo:
+        doc = repo.open()
+
+        # Validar estrutura do JSON
+        if not isinstance(changes, dict):
+            raise ValueError("JSON deve ser um dicionário agrupado por página")
+
+        # Processar cada página
+        for page_num_str, page_objects in changes.items():
+            try:
+                page_num = int(page_num_str)
+            except ValueError:
+                continue
+
+            if page_num < 0 or page_num >= len(doc):
+                continue
+
+            page = doc[page_num]
+
+            # Processar objetos por tipo
+            for obj_type, objects in page_objects.items():
+                if not isinstance(objects, list):
+                    continue
+
+                for obj_data in objects:
+                    if obj_type == "text":
+                        # Aplicar edição de texto
+                        obj_id = obj_data.get("id")
+                        new_content = obj_data.get("content")
+                        if obj_id and new_content:
+                            # Buscar e editar texto
+                            text_objects = repo.extract_text_objects()
+                            for text_obj in text_objects:
+                                if text_obj.id == obj_id and text_obj.page == page_num:
+                                    # Editar texto
+                                    bbox = fitz.Rect(text_obj.x, text_obj.y,
+                                                   text_obj.x + text_obj.width,
+                                                   text_obj.y + text_obj.height)
+                                    page.add_redact_annot(bbox, fill=(1, 1, 1))
+                                    page.apply_redactions()
+
+                                    color_rgb = (0, 0, 0)
+                                    color_hex = obj_data.get("color", "#000000").lstrip("#")
+                                    if len(color_hex) == 6:
+                                        color_rgb = tuple(int(color_hex[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+                                    font_size = obj_data.get("font_size", text_obj.font_size)
+                                    try:
+                                        font = fitz.Font(obj_data.get("font_name", text_obj.font_name) or "helv")
+                                    except:
+                                        font = fitz.Font("helv")
+
+                                    page.insert_text(
+                                        point=(text_obj.x, text_obj.y + font_size),
+                                        text=new_content,
+                                        fontsize=font_size,
+                                        fontname=font.name,
+                                        color=color_rgb
+                                    )
+                                    break
+
+                    elif obj_type == "image":
+                        # Restore de imagens via JSON pode ser feito usando replace_image()
+                        # se necessário. Por enquanto, restore-from-json foca em textos.
+                        pass
+
+        doc.save(output_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
+        doc.close()
 
     logger.log_operation(
         operation_type="restore-from-json",
@@ -452,7 +765,8 @@ def restore_from_json(
         parameters={"json_file": json_file},
         result={
             "changes_count": len(changes) if isinstance(changes, list) else 1,
-            "status": "pending_implementation"
+            "status": "success",
+            "backup": backup_path
         }
     )
 

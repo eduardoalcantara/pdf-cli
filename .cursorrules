@@ -41,4 +41,16 @@ eficiencia_extra:
   - Documente todo processo no README/docs internos conforme avançam as fases.
   - Acompanhe e incorpore feedback do líder do projeto (usuário) de maneira ágil e respeitosa.
 
+Claro, segue abaixo a regra para inserir na categoria **honestidade** do `.cursorrules`:
+
+***
+
+**honestidade:**
+  - O programador deve implementar todas as funcionalidades de acordo com a especificação, realizando operações reais diretamente no arquivo PDF.
+  - É proibido entregar funções simuladas, mockadas ou parcialmente implementadas que não produzam efeito verdadeiro no documento.
+  - Caso enfrente limitações técnicas, deve informar imediatamente o engenheiro responsável via issue detalhada, nunca marcar a função como “implementada” sem estar operacional.
+  - O programador deve ser transparente sobre o estado real do código: não deve mascarar atrasos, funcionalidades pendentes ou resultados simulados.
+  - Apenas marque funcionalidades como concluídas quando estiver funcional, testada e aderente ao solicitado; simulações ou atalhos para acelerar entregas são consideradas quebra de honestidade e desrespeito ao escopo técnico do projeto.
+  - NUNCA MINTA.
+
 fim

@@ -191,6 +191,79 @@ class PDFRepository:
 
         return image_objects
 
+    def extract_link_objects(self) -> List[LinkObject]:
+        """
+        Extrai todos os links do PDF.
+
+        Returns:
+            List[LinkObject]: Lista de links extraídos.
+        """
+        doc = self.open()
+        link_objects = []
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            links = page.get_links()
+
+            for link in links:
+                link_obj = LinkObject(
+                    page=page_num,
+                    url=link.get("uri", ""),
+                    x=link.get("from", fitz.Rect(0, 0, 0, 0)).x0,
+                    y=link.get("from", fitz.Rect(0, 0, 0, 0)).y0,
+                    width=link.get("from", fitz.Rect(0, 0, 0, 0)).width,
+                    height=link.get("from", fitz.Rect(0, 0, 0, 0)).height,
+                    link_type="uri"
+                )
+                link_objects.append(link_obj)
+
+        return link_objects
+
+    def extract_annotation_objects(self) -> List:
+        """
+        Extrai todas as anotações do PDF.
+
+        Returns:
+            List: Lista de anotações extraídas (HighlightAnnotation, CommentAnnotation, etc.).
+        """
+        doc = self.open()
+        annotation_objects = []
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            annots = page.annots()
+
+            for annot in annots:
+                annot_type = annot.type[1] if annot.type else ""
+                info = annot.info
+                rect = annot.rect
+
+                if annot_type == "Highlight":
+                    annot_obj = HighlightAnnotation(
+                        page=page_num,
+                        x=rect.x0,
+                        y=rect.y0,
+                        width=rect.width,
+                        height=rect.height,
+                        color=info.get("color", "#FFFF00"),
+                        text=info.get("content", "")
+                    )
+                    annotation_objects.append(annot_obj)
+                elif annot_type == "Text" or annot_type == "FreeText":
+                    annot_obj = CommentAnnotation(
+                        page=page_num,
+                        x=rect.x0,
+                        y=rect.y0,
+                        width=rect.width,
+                        height=rect.height,
+                        author=info.get("title", ""),
+                        content=info.get("content", ""),
+                        date=info.get("modDate", "")
+                    )
+                    annotation_objects.append(annot_obj)
+
+        return annotation_objects
+
     def save(self, output_path: Optional[str] = None) -> str:
         """
         Salva o documento PDF modificado.
