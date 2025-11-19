@@ -158,6 +158,7 @@ def edit_text(
     font_size: Optional[int] = typer.Option(None, "--font-size", help="Tamanho da fonte"),
     color: Optional[str] = typer.Option(None, "--color", help="Cor do texto (hex)"),
     rotation: Optional[float] = typer.Option(None, "--rotation", help="Rotação em graus"),
+    all_occurrences: bool = typer.Option(False, "--all-occurrences", help="Substitui todas as ocorrências do texto (apenas com --content)"),
     force: bool = typer.Option(False, "--force", help="Sobrescreve sem criar backup"),
     verbose: bool = typer.Option(False, "--verbose", help="Exibe informações detalhadas"),
 ) -> None:
@@ -170,6 +171,7 @@ def edit_text(
     Exemplo:
         pdf-cli edit-text input.pdf output.pdf --id abc123 --new-content "Novo texto"
         pdf-cli edit-text input.pdf output.pdf --content "Texto antigo" --new-content "Novo" --align center --pad
+        pdf-cli edit-text input.pdf output.pdf --content "ALCANTARA" --new-content "ALCÂNTARA" --all-occurrences
     """
     try:
         result_path = services.edit_text(
@@ -186,10 +188,46 @@ def edit_text(
             font_size=font_size,
             color=color,
             rotation=rotation,
-            create_backup=not force
+            create_backup=not force,
+            all_occurrences=all_occurrences
         )
-        console.print(f"[green]✓[/green] Texto editado com sucesso!")
-        console.print(f"   Arquivo: {result_path}")
+
+        if all_occurrences:
+            # Exibir feedback detalhado para cada ocorrência processada
+            occurrences_details = getattr(services.edit_text, '_last_occurrences_details', [])
+
+            console.print(f"\n[bold cyan]Processando {len(occurrences_details)} ocorrência(s)...[/bold cyan]\n")
+            for i, details in enumerate(occurrences_details, 1):
+                console.print(f"[bold blue]┌─[/bold blue] [bold]Ocorrência {i}/{len(occurrences_details)}[/bold]")
+                console.print(f"[bold blue]│[/bold blue] [dim]ID:[/dim] {details['id']}")
+                console.print(f"[bold blue]│[/bold blue] [dim]Página:[/dim] {details['page']}  |  [dim]Posição:[/dim] ({details['coordinates']['x']:.1f}, {details['coordinates']['y']:.1f})  |  [dim]Tamanho:[/dim] {details['coordinates']['width']:.1f}×{details['coordinates']['height']:.1f}")
+
+                # Mostrar mudanças de conteúdo
+                if details['original_content'] != details['new_content']:
+                    original_preview = (details['original_content'][:50] + "...") if len(details['original_content']) > 50 else details['original_content']
+                    new_preview = (details['new_content'][:50] + "...") if len(details['new_content']) > 50 else details['new_content']
+                    console.print(f"[bold blue]│[/bold blue] [dim]Modificado:[/dim] '{original_preview}' [yellow]→[/yellow] '{new_preview}'")
+
+                # Mostrar informações de fonte
+                font_status_icon = "[yellow]⚠[/yellow]" if details['font_fallback'] else "[green]✓[/green]"
+                console.print(f"[bold blue]│[/bold blue] [dim]Fonte original:[/dim] {details['font_original']} ({details['font_size']}pt)")
+                console.print(f"[bold blue]│[/bold blue] {font_status_icon} [dim]Fonte usada:[/dim] {details['font_used']} [dim]({details['font_source']})[/dim]")
+
+                # Mostrar outras mudanças (se houver além do conteúdo)
+                other_changes = [c for c in details['changes'] if 'Conteúdo:' not in c]
+                if other_changes:
+                    for change in other_changes:
+                        console.print(f"[bold blue]│[/bold blue]   [dim]•[/dim] {change}")
+
+                console.print(f"[bold blue]└─[/bold blue]")
+                if i < len(occurrences_details):
+                    console.print()  # Linha em branco entre ocorrências
+
+            console.print(f"\n[green]✓[/green] [bold]Total: {len(occurrences_details)} ocorrência(s) editada(s) com sucesso![/bold]")
+        else:
+            console.print(f"[green]✓[/green] Texto editado com sucesso!")
+
+        console.print(f"   [dim]Arquivo:[/dim] {result_path}")
     except PDFCliException as e:
         console.print(f"[bold red]Erro:[/bold red] {str(e)}")
         raise typer.Exit(1)

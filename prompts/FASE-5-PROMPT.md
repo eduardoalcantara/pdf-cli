@@ -1,40 +1,53 @@
-**Prompt para Cursor IDE — Fase 5: Testes Reais e Relatório de Auditoria**
+**Prompt para Cursor IDE — Implementação da FASE 5: Fallback Inteligente PyMuPDF + pypdf e Auditoria Completa**
 
-Leia e siga estritamente o documento “ESPECIFICACOES-FASE-5-VALIDACAO-REPRODUTIVIDADE-REAL.md”.
-Sua missão nesta fase é garantir a reprodutibilidade, honestidade e auditoria total das funções implementadas até aqui, usando os arquivos PDF da pasta `./examples`.
+Você deverá implementar a FASE 5 conforme a especificação “ESPECIFICACOES-FASE-5-INTEGRACAO-FIDELIDADE-FONTO-PyMuPDF-E-PYPDF.md”.
+**Sua missão é garantir preservação máxima da fonte original do PDF durante edição de textos, utilizando fallback automático para pypdf sempre que o PyMuPDF não conseguir preservar a fidelidade visual.**
 
 ## **Tarefas Obrigatórias**
 
-1. **Teste cada funcionalidade do PDF-cli com TODOS os arquivos reais da pasta `./examples`**
-   - Utilize os arquivos: `boleto.pdf`, `contracheque.pdf`, `demonstrativo.pdf`, `despacho.pdf`, `orçamento.pdf`.
-   - Não utilize PDFs simulados, mockados ou gerados artificialmente.
+1. **Desenvolva um “engine manager” para edição de texto:**
+   - Toda edição de texto (`edit-text`) deve inicialmente usar PyMuPDF.
+   - Após a tentativa, verifique se ocorreu fallback de fonte (ex: Arial mudou para Helvetica).
+   - Se ocorreu, o sistema deve automaticamente realizar a edição utilizando pypdf, preservando a fonte original nas referências do PDF.
+   - O CLI deve informar claramente ao usuário o resultado de cada engine: fonte original, fonte usada, sucesso/falha, log detalhado.
+   - Permita parâmetro ao usuário para forçar uso de engine (`--prefer-engine`).
 
-2. **Para cada função/comando CLI já implementado:**
-   - Extraia textos, imagens, metadados, anotações, links, páginas, etc.
-   - Execute edições de texto, imagens, metadados e manipulações de páginas.
-   - Salve e registre os arquivos de saída (JSONs, imagens exportadas, PDFs modificados).
-   - Gere logs detalhados (em JSON) das operações.
+2. **Teste, de fato, todas operações usando TODOS arquivos PDF do repositório (`./examples/`).**
+   - Execute comandos reais (não simulações) sobre:
+     - boleto.pdf
+     - contracheque.pdf
+     - demonstrativo.pdf
+     - despacho.pdf
+     - orçamento.pdf
+   - Para cada substituição de texto, avalie e registre o comportamento das fontes antes e depois da modificação.
 
-3. **Documente os resultados reais em um relatório “FASE-5-RELATORIO-TESTES-REAIS.md”:**
-   - Para cada comando/teste, registre:
-     - Parâmetros utilizados
-     - Saídas reais geradas (trechos representativos)
-     - Logs reais das execuções
-     - Status (sucesso, erro, limitação)
-     - Observações sobre o resultado funcional e visual
-     - Caso alguma função não opere conforme o esperado, justifique tecnicamente e sugira possível solução.
+3. **Produza e guarde logs e JSONs reais:**
+   - Para cada operação e cada arquivo, gere:
+     - JSON representando a estrutura dos objetos “antes” da modificação
+     - JSON representando a estrutura “depois”
+     - Log detalhado (JSONL) com engine utilizada, fontes, sucesso/erro, observações, hashes dos arquivos envolvidos
+   - Todos esses arquivos devem ser organizados para análise posterior (pasta “logs/”, “outputs/”).
 
-4. **Checklist de auditoria:**
-   - Todos arquivos gerados devem ser disponibilizados para conferência (pasta “logs/”, “outputs/”).
-   - O relatório deve permitir que outro profissional repita exatamente os testes e obtenha os mesmos resultados.
+4. **Relatório de auditoria obrigatória:**
+   - Elabore um documento “FASE-5-RELATORIO-FONTS-REAL.md” contendo:
+     - Tabela (por arquivo) comparando fonte antes/depois, engine utilizada, divergências, possíveis causas e sugestões de solução
+     - Trechos relevantes dos arquivos modificados (imagens ou texto extraído)
+     - Logs e JSONs gerados
 
-5. **Transparência e honestidade:**
-   - Não omita falhas, erros ou resultados incompletos.
-   - Só declare como testada a funcionalidade que operou de fato sobre os PDFs reais.
+5. **Transparência e honestidade absoluta:**
+   - Não oculte ou mascare falhas, limitações ou problemas; cada ocorrência deve ser informada com precisão e justificativa técnica.
+   - Nunca declare como “feito/testado” nenhuma funcionalidade que não opere sobre arquivos reais do repositório.
+   - Se ambos engines falharem, registre limitação técnica no relatório, proponha workaround ou pesquisa complementar.
 
-## **Regra de Ouro**
-> “Testar é validar com o mundo real: cada função deve ser exercitada nos arquivos originais, toda saída deve ser concreta, todo relatório deve ser fidedigno e auditável.”
+6. **Documentação e commit:**
+   - Atualize o README, documentação e CHANGELOG com o novo fluxo de fallback, exemplos de uso, logs reais e limitações.
+   - Cada commit deve associar código, logs, JSONs e relatório da operação.
 
 ***
 
-Inicie a execução dos testes conforme especificações, organize as saídas, e redija o relatório final para homologação do projeto.
+## **Regra de Ouro:**
+> “Priorize sempre a honestidade e auditoria: toda modificação deve ser rastreável, testada, logada e documentada com o máximo de detalhes, usando arquivos reais do acervo do projeto.”
+
+***
+
+**A qualidade institucional e técnica do PDF-cli depende da perfeição e transparência desta fase. Execute sem atalhos!**

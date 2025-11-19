@@ -6,7 +6,7 @@ operações principais do PDF-cli conforme especificações da Fase 3.
 """
 
 from pathlib import Path
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Tuple, Callable
 import json
 import shutil
 from datetime import datetime
@@ -133,6 +133,290 @@ def export_objects(
 # EDIÇÃO DE OBJETOS
 # ============================================================================
 
+def _edit_text_all_occurrences(
+    pdf_path: str,
+    output_path: str,
+    search_term: str,
+    new_content: str,
+    align: Optional[str] = None,
+    pad: bool = False,
+    font_name: Optional[str] = None,
+    font_size: Optional[int] = None,
+    color: Optional[str] = None,
+    rotation: Optional[float] = None,
+    create_backup: bool = True,
+    feedback_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Função auxiliar para editar todas as ocorrências de um texto.
+
+    Processa todas as ocorrências do search_term no PDF e substitui por new_content,
+    preservando o texto completo quando search_term é uma substring.
+
+    Args:
+        feedback_callback: Função opcional chamada após cada ocorrência processada.
+                          Recebe um dict com: id, page, coordinates, original_content,
+                          new_content, font_original, font_used, font_fallback, changes
+
+    Returns:
+        tuple[str, List[Dict]]: (caminho_do_arquivo, lista_de_detalhes_das_ocorrências)
+    """
+    logger = get_logger()
+
+    # Criar backup se solicitado
+    backup_path = None
+    if create_backup:
+        with PDFRepository(pdf_path) as repo:
+            backup_path = repo.create_backup()
+
+    # Sempre usar arquivo temporário para evitar problemas de lock no Windows
+    # PyMuPDF com incremental=False não pode salvar no mesmo arquivo que foi aberto
+    import tempfile
+    output_path_obj = Path(output_path)
+
+    # Criar dois arquivos temporários: um para trabalhar e outro para salvar
+    working_temp = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', dir=output_path_obj.parent)
+    working_temp.close()
+    working_temp_path = working_temp.name
+
+    save_temp = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', dir=output_path_obj.parent)
+    save_temp.close()
+    save_temp_path = save_temp.name
+
+    final_output_path = str(output_path_obj)
+
+    # Copiar arquivo para arquivo temporário de trabalho
+    shutil.copy(pdf_path, working_temp_path)
+
+    # Contador de ocorrências processadas
+    occurrences_processed = 0
+    processed_ids = []
+    occurrences_details = []  # Lista de detalhes de cada ocorrência processada
+
+    # Abrir documento UMA VEZ e processar todas as ocorrências
+    # Isso evita problemas de lock de arquivo no Windows e é mais eficiente (DRY)
+    with PDFRepository(working_temp_path) as repo:
+        doc = repo.open()
+
+        # Preparar fonte e cor uma única vez (reutilizar para todas as ocorrências)
+        font_mapping = {
+            "ArialMT": "helv",
+            "Arial": "helv",
+            "ArialNarrow": "helv",
+            "ArialNarrow-Bold": "hebo",
+            "Times": "tiro",
+            "Times-Roman": "tiro",
+            "Courier": "cour",
+        }
+
+        # Preparar cor (reutilizável)
+        color_rgb = (0, 0, 0)
+        if color:
+            hex_color = color.lstrip("#")
+            if len(hex_color) == 6:
+                color_rgb = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+        # Processar ocorrências em loop até não encontrar mais
+        while True:
+            # Extrair textos (necessário recarregar para ver mudanças após redaction)
+            text_objects = repo.extract_text_objects()
+
+            # Encontrar próxima ocorrência
+            target_obj = None
+            for obj in text_objects:
+                # Ignorar objetos já processados (por ID)
+                if obj.id in processed_ids:
+                    continue
+                # Buscar ocorrência que contém o search_term
+                if search_term in obj.content:
+                    target_obj = obj
+                    break
+
+            # Se não encontrou mais ocorrências, parar
+            if target_obj is None:
+                break
+
+            # Marcar como processado
+            processed_ids.append(target_obj.id)
+            occurrences_processed += 1
+
+            # Determinar conteúdo final (substituição parcial ou completa)
+            original_content = target_obj.content
+            if search_term in original_content and search_term != original_content:
+                # Substituição parcial: preservar texto completo, substituir apenas substring
+                final_content = original_content.replace(search_term, new_content, 1)
+            else:
+                # Substituição completa
+                final_content = new_content
+
+            # Determinar propriedades finais
+            final_font = target_obj.font_name if not font_name else font_name
+            final_font_size = target_obj.font_size if font_size is None else font_size
+            final_rotation = target_obj.rotation if rotation is None else rotation
+
+            # Mapear e carregar fonte
+            font_loaded = None
+            mapped_font = font_mapping.get(final_font) if final_font else None
+            if mapped_font:
+                try:
+                    font_loaded = fitz.Font(mapped_font)
+                except:
+                    pass
+
+            if font_loaded is None and final_font:
+                try:
+                    font_loaded = fitz.Font(final_font)
+                except:
+                    pass
+
+            if font_loaded is None:
+                font_loaded = fitz.Font("helv")
+
+            fontname_to_use = font_loaded.name
+            font_fallback_occurred = False
+
+            # Detectar se houve fallback de fonte
+            if mapped_font:
+                # Fonte foi mapeada (fallback)
+                font_fallback_occurred = True
+                font_used_source = f"mapeada ({final_font} → {mapped_font})"
+            elif font_loaded.name == "Helvetica" and final_font and final_font != "helv":
+                # Fonte original não encontrada, caiu para Helvetica padrão
+                font_fallback_occurred = True
+                font_used_source = f"fallback padrão (Helvetica)"
+            else:
+                # Fonte original foi usada
+                font_used_source = f"original ({final_font})"
+
+            if final_font and "bold" in final_font.lower() and "hebo" not in fontname_to_use.lower():
+                try:
+                    bold_font = fitz.Font("hebo")
+                    fontname_to_use = bold_font.name
+                    if not font_fallback_occurred:
+                        font_fallback_occurred = True
+                        font_used_source += " → bold aplicado"
+                except:
+                    pass
+
+            # Coletar detalhes da ocorrência
+            occurrence_details = {
+                "id": target_obj.id,
+                "page": target_obj.page,
+                "coordinates": {
+                    "x": round(target_obj.x, 2),
+                    "y": round(target_obj.y, 2),
+                    "width": round(target_obj.width, 2),
+                    "height": round(target_obj.height, 2)
+                },
+                "original_content": original_content,
+                "new_content": final_content,
+                "font_original": final_font,
+                "font_used": fontname_to_use,
+                "font_fallback": font_fallback_occurred,
+                "font_source": font_used_source,
+                "font_size": final_font_size,
+                "substitution_type": "parcial" if search_term in original_content and search_term != original_content else "completa",
+                "changes": []
+            }
+
+            # Detectar mudanças específicas
+            if original_content != final_content:
+                occurrence_details["changes"].append(f"Conteúdo: '{original_content[:50]}...' → '{final_content[:50]}...'")
+            if font_name and font_name != target_obj.font_name:
+                occurrence_details["changes"].append(f"Fonte: {target_obj.font_name} → {font_name}")
+            if font_size is not None and font_size != target_obj.font_size:
+                occurrence_details["changes"].append(f"Tamanho: {target_obj.font_size}pt → {font_size}pt")
+            if color and color != target_obj.color:
+                occurrence_details["changes"].append(f"Cor: {target_obj.color} → {color}")
+            if align and align != target_obj.align:
+                occurrence_details["changes"].append(f"Alinhamento: {target_obj.align or 'default'} → {align}")
+
+            occurrences_details.append(occurrence_details)
+
+            # Chamar callback de feedback se fornecido
+            if feedback_callback:
+                feedback_callback(occurrence_details)
+
+            # Aplicar edição no PDF
+            page = doc[target_obj.page]
+
+            # Remover texto antigo usando redaction
+            bbox = fitz.Rect(target_obj.x, target_obj.y, target_obj.x + target_obj.width, target_obj.y + target_obj.height)
+            page.add_redact_annot(bbox, fill=(1, 1, 1))
+            page.apply_redactions()
+
+            # Inserir novo texto com formatação preservada
+            page.insert_text(
+                point=(target_obj.x, target_obj.y + final_font_size),
+                text=final_content,
+                fontsize=final_font_size,
+                fontname=fontname_to_use,
+                color=color_rgb,
+                rotate=final_rotation
+            )
+
+        # Salvar PDF APENAS UMA VEZ após todas as edições (em arquivo temporário diferente do que foi aberto)
+        # PyMuPDF requer salvar em arquivo diferente quando incremental=False
+        doc.save(save_temp_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
+        # O context manager fechará o documento automaticamente ao sair do bloco 'with'
+
+    # Limpar arquivo temporário de trabalho e mover arquivo salvo para o nome final
+    try:
+        # Remover arquivo temporário de trabalho
+        if Path(working_temp_path).exists():
+            Path(working_temp_path).unlink()
+
+        # Mover arquivo salvo para o nome final
+        output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        if output_path_obj.exists():
+            output_path_obj.unlink()
+        shutil.move(save_temp_path, final_output_path)
+        output_path = final_output_path
+    except Exception as e:
+        # Se não conseguir mover, logar erro mas continuar com arquivo temporário
+        logger.log_operation(
+            operation_type="edit-text",
+            input_file=pdf_path,
+            output_file=save_temp_path,
+            parameters={"warning": f"Arquivo temporário não pôde ser movido para {final_output_path}: {str(e)}"},
+            status="warning"
+        )
+        output_path = save_temp_path
+        # Tentar limpar arquivo temporário de trabalho
+        try:
+            if Path(working_temp_path).exists():
+                Path(working_temp_path).unlink()
+        except:
+            pass
+
+    # Log da operação
+    logger.log_operation(
+        operation_type="edit-text",
+        input_file=pdf_path,
+        output_file=output_path,
+        parameters={
+            "search_term": search_term,
+            "new_content": new_content,
+            "all_occurrences": True,
+            "align": align,
+            "pad": pad,
+            "font_name": font_name,
+            "font_size": font_size,
+            "color": color,
+            "rotation": rotation
+        },
+        result={
+            "status": "success",
+            "occurrences_processed": occurrences_processed,
+            "occurrences_details": occurrences_details,
+            "backup": backup_path
+        },
+        notes=f"Processadas {occurrences_processed} ocorrências do texto '{search_term}'"
+    )
+
+    return output_path, occurrences_details
+
+
 def edit_text(
     pdf_path: str,
     output_path: str,
@@ -148,7 +432,8 @@ def edit_text(
     font_size: Optional[int] = None,
     color: Optional[str] = None,
     rotation: Optional[float] = None,
-    create_backup: bool = True
+    create_backup: bool = True,
+    all_occurrences: bool = False
 ) -> str:
     """
     Edita um objeto de texto no PDF.
@@ -172,6 +457,7 @@ def edit_text(
         color: Nova cor (formato hex).
         rotation: Nova rotação em graus.
         create_backup: Se True, cria backup antes de modificar.
+        all_occurrences: Se True, substitui todas as ocorrências encontradas (apenas com content/search_content).
 
     Returns:
         str: Caminho do PDF modificado.
@@ -189,6 +475,25 @@ def edit_text(
         with PDFRepository(pdf_path) as repo:
             backup_path = repo.create_backup()
 
+    # Se all_occurrences está ativo e search_term foi fornecido, processar todas as ocorrências
+    if all_occurrences and search_term and not object_id:
+        result_path, occurrences_details = _edit_text_all_occurrences(
+            pdf_path=pdf_path,
+            output_path=output_path,
+            search_term=search_term,
+            new_content=new_content,
+            align=align,
+            pad=pad,
+            font_name=font_name,
+            font_size=font_size,
+            color=color,
+            rotation=rotation,
+            create_backup=False  # Já criamos o backup acima
+        )
+        # Armazenar detalhes em atributo da função para acesso externo
+        edit_text._last_occurrences_details = occurrences_details
+        return result_path
+
     with PDFRepository(pdf_path) as repo:
         # Extrair textos
         text_objects = repo.extract_text_objects()
@@ -202,6 +507,7 @@ def edit_text(
                     break
         elif search_term:
             for obj in text_objects:
+                # Busca por substring - se encontrar, usar o texto completo como base
                 if search_term in obj.content:
                     target_obj = obj
                     break
@@ -212,15 +518,34 @@ def edit_text(
                 suggestion="Use export-objects para listar todos os textos disponíveis."
             )
 
-        # Preparar alterações
+        # Preparar alterações - salvar estado original antes de modificar
         before_state = target_obj.to_dict()
+        original_content = target_obj.content
 
+        # Lógica de substituição de conteúdo
         if new_content:
-            if pad:
-                # Aplicar padding
-                target_obj.content = center_and_pad_text(target_obj, new_content)
+            # IMPORTANTE: Se o search_term é uma substring do texto original,
+            # substituir APENAS a parte correspondente, preservando o resto do texto
+            if search_term and search_term.strip() and search_term in original_content and search_term != original_content:
+                # Substituição parcial: preservar o texto original, substituindo apenas a substring encontrada
+                target_obj.content = original_content.replace(search_term, new_content, 1)
+                # Usar o conteúdo parcial substituído para as próximas operações (pad, etc.)
+                final_content_for_ops = target_obj.content
             else:
-                target_obj.content = new_content
+                # Substituição completa: substituir todo o conteúdo
+                # Isso acontece quando:
+                # - search_term é None (busca por ID)
+                # - search_term == original_content (texto completo idêntico)
+                # - search_term não está no original_content
+                if pad:
+                    # Aplicar padding
+                    target_obj.content = center_and_pad_text(target_obj, new_content)
+                else:
+                    target_obj.content = new_content
+                final_content_for_ops = target_obj.content
+
+            # Atualizar final_content para usar na inserção no PDF
+            final_content = target_obj.content
 
         if align:
             target_obj.align = align
@@ -244,7 +569,11 @@ def edit_text(
         # Preparar novo conteúdo (new_content é obrigatório, senão não há nada para editar)
         if not new_content:
             raise ValueError("Parâmetro 'new_content' é obrigatório para edição de texto")
-        final_content = new_content
+
+        # final_content já foi definido acima (linha 243) com a substituição parcial ou completa
+        # Se não foi definido (não entrou no if new_content), usar new_content diretamente
+        if 'final_content' not in locals():
+            final_content = new_content
 
         # Determinar posição (usar coordenadas do objeto ou novas coordenadas)
         final_x = target_obj.x if x is None else x
@@ -280,24 +609,61 @@ def edit_text(
         # Inserir texto com formatação
         text_rect = fitz.Rect(final_x, final_y, final_x + target_obj.width, final_y + target_obj.height)
 
-        # Tentar carregar fonte (fallback para helv se não encontrar)
-        try:
-            font = fitz.Font(final_font if final_font else "helv")
-        except:
-            font = fitz.Font("helv")
+        # Tentar carregar fonte original, com fallback para fontes padrão similares
+        # PyMuPDF não consegue carregar todas as fontes do sistema, então tentamos fontes padrão similares
+        font_loaded = None
+
+        # Mapear fontes comuns para fontes padrão do PyMuPDF
+        font_mapping = {
+            "ArialMT": "helv",
+            "Arial": "helv",
+            "ArialNarrow": "helv",
+            "ArialNarrow-Bold": "hebo",  # Helvetica-Bold
+            "Times": "tiro",
+            "Times-Roman": "tiro",
+            "Courier": "cour",
+        }
+
+        # Tentar usar mapeamento primeiro
+        mapped_font = font_mapping.get(final_font) if final_font else None
+        if mapped_font:
+            try:
+                font_loaded = fitz.Font(mapped_font)
+            except:
+                pass
+
+        # Se não funcionou, tentar fonte original
+        if font_loaded is None and final_font:
+            try:
+                font_loaded = fitz.Font(final_font)
+            except:
+                pass
+
+        # Fallback final para helv (Helvetica)
+        if font_loaded is None:
+            font_loaded = fitz.Font("helv")
+
+        # Para fontes em negrito, tentar usar versão bold se disponível
+        fontname_to_use = font_loaded.name
+        if final_font and "bold" in final_font.lower() and "hebo" not in fontname_to_use.lower():
+            try:
+                bold_font = fitz.Font("hebo")  # Helvetica-Bold
+                fontname_to_use = bold_font.name
+            except:
+                pass  # Usar fonte normal se bold não disponível
 
         page.insert_text(
             point=(final_x, final_y + final_font_size),  # Ajustar Y para baseline
             text=final_content,
             fontsize=final_font_size,
-            fontname=font.name,
+            fontname=fontname_to_use,
             color=color_rgb,
             rotate=target_obj.rotation if rotation is None else rotation
         )
 
         # Salvar PDF modificado
         doc.save(output_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
-        doc.close()
+        # Não fechar manualmente - o context manager fará isso
 
         after_state = target_obj.to_dict()
 
