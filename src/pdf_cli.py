@@ -15,7 +15,19 @@ import sys
 from pathlib import Path
 
 # Adiciona o diretório src ao path para imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Se estiver rodando como executável PyInstaller, o __file__ aponta para um temp
+# Nesse caso, precisamos encontrar o diretório base do executável
+if getattr(sys, 'frozen', False):
+    # Rodando como executável compilado (PyInstaller)
+    # sys._MEIPASS contém o caminho temporário onde os arquivos estão descompactados
+    base_path = Path(sys._MEIPASS)
+    # Os módulos coletados pelo PyInstaller ficam em sys._MEIPASS
+    # Adiciona ao path para garantir que os imports funcionem
+    if str(base_path) not in sys.path:
+        sys.path.insert(0, str(base_path))
+else:
+    # Rodando como script Python normal
+    sys.path.insert(0, str(Path(__file__).parent))
 
 # Imports dos módulos CLI
 from cli.help import (
