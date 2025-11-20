@@ -1,4 +1,4 @@
-**Prompt para Cursor IDE — Fase 5: Testes Reais e Relatório de Auditoria**
+**Prompt para Cursor IDE — Fase 6: Testes Reais e Relatório de Auditoria**
 
 Leia e siga estritamente o documento “ESPECIFICACOES-FASE-5-VALIDACAO-REPRODUTIVIDADE-REAL.md”.
 Sua missão nesta fase é garantir a reprodutibilidade, honestidade e auditoria total das funções implementadas até aqui, usando os arquivos PDF da pasta `./examples`.

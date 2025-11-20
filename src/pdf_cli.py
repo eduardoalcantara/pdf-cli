@@ -79,7 +79,9 @@ def main(
 ) -> None:
     """
     Comandos disponíveis:
+        export-text        - Extrai apenas textos do PDF para JSON (alias)
         export-objects     - Extrai objetos do PDF para JSON
+        export-images      - Extrai imagens do PDF como arquivos PNG/JPG
         list-fonts         - Lista todas as fontes e variantes usadas no PDF
         edit-text          - Edita objeto de texto
         edit-table         - Edita tabela
@@ -92,13 +94,53 @@ def main(
         split              - Divide PDF em múltiplos arquivos
     """
     if version:
-        console.print("[bold cyan]PDF-cli[/bold cyan] versão 0.4.0 (Fase 4)")
+        console.print("[bold cyan]PDF-cli[/bold cyan] versão 0.6.0 (Fase 6)")
         raise typer.Exit()
 
     if ctx.invoked_subcommand is None:
         # Banner obrigatório conforme Fase 2
         print_banner()
         console.print(ctx.get_help())
+
+
+@app.command("export-text")
+def export_text(
+    pdf_path: str = typer.Argument(..., help="Caminho para o arquivo PDF"),
+    output: str = typer.Argument(..., help="Caminho de saída para o JSON"),
+    verbose: bool = typer.Option(False, "--verbose", help="Exibe informações detalhadas"),
+) -> None:
+    """
+    Extrai e exporta apenas textos do PDF para JSON (alias para export-objects --types text).
+
+    Útil para copiar textos de PDFs protegidos ou exportar apenas conteúdo textual.
+    Permite exportar textos com metadados (posição, fonte, tamanho, etc.).
+
+    Exemplo:
+        pdf-cli export-text documento.pdf textos.json
+        pdf-cli export-text documento.pdf textos.json --verbose
+    """
+    try:
+        # Alias: chamar export-objects com --types text
+        stats = services.export_objects(pdf_path, output, types=["text"], include_fonts=False)
+
+        console.print(f"[green]✓[/green] Textos exportados com sucesso!")
+        console.print(f"   Arquivo: {output}")
+        console.print(f"   Total de textos: {stats['by_type'].get('text', 0)}")
+
+        if verbose:
+            console.print(f"\n   Estatísticas:")
+            console.print(f"     Total de objetos: {stats['total_objects']}")
+            if stats.get('by_page'):
+                console.print(f"     Páginas: {len(stats['by_page'])}")
+    except PDFCliException as e:
+        console.print(f"[bold red]Erro:[/bold red] {str(e)}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[bold red]Erro inesperado:[/bold red] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        raise typer.Exit(1)
 
 
 @app.command("export-objects")
@@ -180,6 +222,56 @@ def _normalize_font_name(font_name: str) -> str:
             return parts[1]
 
     return font_name
+
+
+@app.command("export-images")
+def export_images(
+    pdf_path: str = typer.Argument(..., help="Caminho para o arquivo PDF"),
+    output_dir: str = typer.Argument(..., help="Diretório onde as imagens serão salvas"),
+    format: str = typer.Option("png", "--format", "-f", help="Formato de saída: png ou jpg"),
+    verbose: bool = typer.Option(False, "--verbose", help="Exibe informações detalhadas"),
+) -> None:
+    """
+    Extrai todas as imagens do PDF e salva como arquivos de imagem reais (PNG ou JPG).
+
+    Diferente de export-objects --types image que exporta apenas metadados em JSON,
+    este comando salva as imagens como arquivos reais em um diretório.
+
+    As imagens são nomeadas como: imagem_<página>_<índice>.<extensão>
+    Exemplo: imagem_0_1.png, imagem_1_3.jpg
+
+    Exemplo:
+        pdf-cli export-images documento.pdf imagens/
+        pdf-cli export-images documento.pdf imagens/ --format jpg
+        pdf-cli export-images documento.pdf imagens/ --format png --verbose
+    """
+    try:
+        stats = services.export_images(pdf_path, output_dir, format=format)
+
+        console.print(f"[green]✓[/green] Imagens exportadas com sucesso!")
+        console.print(f"   Diretório: {stats['output_directory']}")
+        console.print(f"   Total de imagens: {stats['total_images']}")
+
+        if verbose:
+            console.print(f"\n   Por página:")
+            for page, count in sorted(stats['by_page'].items()):
+                console.print(f"     Página {page}: {count} imagem(ns)")
+
+            if stats['saved_files']:
+                console.print(f"\n   Arquivos salvos:")
+                for img in stats['saved_files'][:10]:  # Mostrar apenas primeiras 10
+                    console.print(f"     - {img['filename']} ({img['width']}×{img['height']}px, página {img['page']})")
+                if len(stats['saved_files']) > 10:
+                    console.print(f"     ... (+{len(stats['saved_files'])-10} mais)")
+    except PDFCliException as e:
+        console.print(f"[bold red]Erro:[/bold red] {str(e)}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[bold red]Erro inesperado:[/bold red] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        raise typer.Exit(1)
 
 
 @app.command("list-fonts")
@@ -547,6 +639,9 @@ def edit_table(
         pdf-cli edit-table input.pdf output.pdf --id tbl-123 --header "Novo Header"
     """
     try:
+        # Validar que entrada e saída não são o mesmo arquivo
+        _validate_input_output_paths(pdf_path, output)
+
         result_path = services.edit_table(
             pdf_path=pdf_path,
             output_path=output,
@@ -591,6 +686,9 @@ def replace_image(
         pdf-cli replace-image input.pdf output.pdf --id img-123 --src nova.png --filter grayscale
     """
     try:
+        # Validar que entrada e saída não são o mesmo arquivo
+        _validate_input_output_paths(pdf_path, output)
+
         result_path = services.replace_image(
             pdf_path=pdf_path,
             output_path=output,
@@ -631,6 +729,9 @@ def insert_object(
         pdf-cli insert-object input.pdf output.pdf --type text --params '{"page":0,"content":"Novo texto","x":100,"y":100,"width":200,"height":20,"font_name":"Arial","font_size":12}'
     """
     try:
+        # Validar que entrada e saída não são o mesmo arquivo
+        _validate_input_output_paths(pdf_path, output)
+
         result_path = services.insert_object(
             pdf_path=pdf_path,
             output_path=output,
@@ -669,6 +770,9 @@ def restore_from_json(
         pdf-cli restore-from-json source.pdf objetos_editados.json output.pdf
     """
     try:
+        # Validar que entrada e saída não são o mesmo arquivo
+        _validate_input_output_paths(source_pdf, output)
+
         result_path = services.restore_from_json(
             source_pdf=source_pdf,
             json_file=json_file,
@@ -712,6 +816,9 @@ def edit_metadata(
         pdf-cli edit-metadata input.pdf output.pdf --keywords "palavra1,palavra2"
     """
     try:
+        # Validar que entrada e saída não são o mesmo arquivo
+        _validate_input_output_paths(pdf_path, output)
+
         result_path = services.edit_metadata(
             pdf_path=pdf_path,
             output_path=output,
@@ -786,6 +893,9 @@ def delete_pages(
         pdf-cli delete-pages input.pdf output.pdf --pages 1-5
     """
     try:
+        # Validar que entrada e saída não são o mesmo arquivo
+        _validate_input_output_paths(pdf_path, output)
+
         # Confirmar se for operação destrutiva sem --force
         if not force:
             page_list = services.parse_page_numbers(pages)

@@ -238,6 +238,117 @@ def export_objects(
         return stats
 
 
+def export_images(
+    pdf_path: str,
+    output_dir: str,
+    format: str = "png"
+) -> Dict[str, Any]:
+    """
+    Extrai todas as imagens do PDF e salva como arquivos de imagem reais.
+
+    Diferente de export-objects --types image que exporta metadados em JSON,
+    esta função salva as imagens como arquivos PNG ou JPG em um diretório.
+
+    Args:
+        pdf_path: Caminho para o arquivo PDF.
+        output_dir: Diretório onde as imagens serão salvas.
+        format: Formato de saída ("png" ou "jpg"). Padrão: "png".
+
+    Returns:
+        dict: Estatísticas da extração (contadores, caminhos dos arquivos).
+    """
+    import base64
+    from pathlib import Path
+
+    logger = get_logger()
+
+    # Criar diretório de saída se não existir
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Validar formato
+    format_lower = format.lower()
+    if format_lower not in ["png", "jpg", "jpeg"]:
+        raise PDFCliException(f"Formato inválido: {format}. Use 'png' ou 'jpg'.")
+
+    # Normalizar extensão
+    if format_lower == "jpeg":
+        format_lower = "jpg"
+    extension = format_lower
+
+    with PDFRepository(pdf_path) as repo:
+        image_objects = repo.extract_image_objects()
+
+        saved_files = []
+        image_counter = {}  # Contador por página para nomear arquivos
+
+        for img_obj in image_objects:
+            page = img_obj.page
+
+            # Contador de imagens nesta página
+            if page not in image_counter:
+                image_counter[page] = 0
+            image_counter[page] += 1
+            img_index = image_counter[page]
+
+            # Nome do arquivo: imagem_página_indice.extensão
+            # Ex: imagem_0_1.png, imagem_1_3.jpg
+            filename = f"imagem_{page}_{img_index}.{extension}"
+            filepath = output_path / filename
+
+            # Decodificar base64 e salvar
+            try:
+                image_data = base64.b64decode(img_obj.data_base64)
+                with open(filepath, "wb") as f:
+                    f.write(image_data)
+                saved_files.append({
+                    "page": page,
+                    "index": img_index,
+                    "filename": filename,
+                    "path": str(filepath),
+                    "width": img_obj.width,
+                    "height": img_obj.height,
+                    "mime_type": img_obj.mime_type
+                })
+            except Exception as e:
+                logger.log_operation(
+                    operation_type="export-images",
+                    input_file=pdf_path,
+                    output_file=str(filepath),
+                    parameters={"format": format},
+                    result={"error": str(e)},
+                    status="error",
+                    notes=f"Falha ao salvar imagem da página {page}, índice {img_index}"
+                )
+                continue
+
+        # Estatísticas
+        stats = {
+            "total_images": len(saved_files),
+            "by_page": {},
+            "saved_files": saved_files,
+            "output_directory": str(output_path)
+        }
+
+        # Contar por página
+        for img in saved_files:
+            page = img["page"]
+            if page not in stats["by_page"]:
+                stats["by_page"][page] = 0
+            stats["by_page"][page] += 1
+
+        # Log da operação
+        logger.log_operation(
+            operation_type="export-images",
+            input_file=pdf_path,
+            output_file=str(output_path),
+            parameters={"format": format},
+            result=stats
+        )
+
+        return stats
+
+
 # ============================================================================
 # EDIÇÃO DE OBJETOS
 # ============================================================================
