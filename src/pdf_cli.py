@@ -339,21 +339,21 @@ def list_fonts(
 def _validate_input_output_paths(input_path: str, output_path: str) -> None:
     """
     Valida que os caminhos de entrada e saída não são o mesmo arquivo.
-    
+
     Args:
         input_path: Caminho do arquivo de entrada
         output_path: Caminho do arquivo de saída
-        
+
     Raises:
         PDFCliException: Se os caminhos forem iguais (mesmo arquivo)
     """
     from pathlib import Path
     from core.exceptions import PDFCliException
-    
+
     # Resolver caminhos absolutos e normalizar
     input_abs = Path(input_path).resolve()
     output_abs = Path(output_path).resolve()
-    
+
     if input_abs == output_abs:
         raise PDFCliException(
             f"Erro: O arquivo de entrada e saída são o mesmo: {input_path}\n"
@@ -395,8 +395,64 @@ def edit_text(
     try:
         # Validar que entrada e saída não são o mesmo arquivo
         _validate_input_output_paths(pdf_path, output)
-        
+
         if all_occurrences:
+            # Pré-verificar fontes faltantes ANTES de processar
+            from app.pdf_repo import PDFRepository
+            from core.font_manager import FontManager, FontMatchQuality
+
+            preview_font_manager = FontManager()
+            with PDFRepository(pdf_path) as repo:
+                if content:  # Só faz sentido se há busca por conteúdo
+                    text_objects = repo.extract_text_objects()
+                    fonts_dict = repo.extract_fonts()
+                    target_objects = [obj for obj in text_objects if content in obj.content]
+
+                    # Verificar fontes que serão usadas
+                    for obj in target_objects:
+                        font_loaded, font_source = repo.get_font_for_text_object(obj.font_name, fonts_dict)
+                        if font_loaded:
+                            loaded_font_name = font_loaded.name if hasattr(font_loaded, 'name') else ""
+                            font_name_matches = (loaded_font_name.lower() in obj.font_name.lower() or
+                                               obj.font_name.lower() in loaded_font_name.lower())
+
+                            if font_source in ["extracted", "embedded"]:
+                                match_quality = FontMatchQuality.EXACT
+                            elif font_name_matches and font_source in ["system", "cache"]:
+                                match_quality = FontMatchQuality.EXACT
+                            elif font_source in ["system", "cache"] and not font_name_matches:
+                                match_quality = FontMatchQuality.VARIANT
+                            elif font_source == "fallback":
+                                match_quality = FontMatchQuality.FALLBACK
+                            else:
+                                match_quality = FontMatchQuality.SIMILAR
+
+                            if match_quality != FontMatchQuality.EXACT:
+                                preview_font_manager.add_requirement(
+                                    font_name=obj.font_name,
+                                    found_font=loaded_font_name,
+                                    match_quality=match_quality,
+                                    system_path=getattr(font_loaded, '_fontfile', None),
+                                    page=obj.page
+                                )
+                        else:
+                            preview_font_manager.add_requirement(
+                                font_name=obj.font_name,
+                                found_font=None,
+                                match_quality=FontMatchQuality.MISSING,
+                                page=obj.page
+                            )
+
+            # Se há fontes faltantes, solicitar confirmação ANTES de processar
+            if preview_font_manager.has_missing_fonts():
+                summary = preview_font_manager.get_missing_fonts_summary()
+                print(summary)
+                console.print("\n[bold yellow]⚠️ ATENÇÃO:[/bold yellow] O PDF gerado pode ter aparência diferente devido às fontes faltantes.")
+                if not typer.confirm("\nDeseja continuar assim mesmo e gerar o PDF?", default=False):
+                    console.print("[yellow]Operação cancelada pelo usuário.[/yellow]")
+                    raise typer.Abort()
+                console.print()
+
             console.print("\n[bold yellow]Processando ocorrências...[/bold yellow]\n")
             result_path, details = services.edit_text(
                 pdf_path=pdf_path,
