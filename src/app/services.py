@@ -35,6 +35,40 @@ from app.logging import get_logger
 # EXTRAÇÃO DE OBJETOS
 # ============================================================================
 
+def _normalize_font_name(font_name: str) -> str:
+    """
+    Normaliza o nome da fonte removendo prefixos de subset.
+
+    Os PDFs com fontes subset usam prefixos como "EAAAAB+SegoeUI-Bold",
+    mas os objetos de texto extraídos usam apenas "SegoeUI-Bold".
+    Esta função remove o prefixo para permitir correspondência correta.
+
+    Args:
+        font_name: Nome da fonte (pode conter prefixo de subset)
+
+    Returns:
+        str: Nome da fonte sem prefixo de subset
+
+    Exemplos:
+        "EAAAAB+SegoeUI-Bold" -> "SegoeUI-Bold"
+        "ABCDEF+Times-Roman" -> "Times-Roman"
+        "ArialMT" -> "ArialMT"
+        "Courier" -> "Courier"
+    """
+    if not font_name:
+        return font_name
+
+    # Padrão: prefixo de subset é sempre seguido de "+"
+    # Formato típico: "EAAAAB+SegoeUI-Bold" ou "ABCDEF+FontName"
+    if '+' in font_name:
+        # Pegar tudo depois do "+"
+        parts = font_name.split('+', 1)
+        if len(parts) > 1:
+            return parts[1]
+
+    return font_name
+
+
 def export_objects(
     pdf_path: str,
     output_path: str,
@@ -105,24 +139,28 @@ def export_objects(
             fonts_dict = repo.extract_fonts()
             text_objects_for_stats = repo.extract_text_objects()
 
-            # Estatísticas de uso por fonte
+            # Estatísticas de uso por fonte (normalizar nomes para correspondência)
             font_stats = {}
             for text_obj in text_objects_for_stats:
                 font_name = text_obj.font_name
-                if font_name not in font_stats:
-                    font_stats[font_name] = {
+                # Normalizar nome para garantir correspondência
+                normalized_name = _normalize_font_name(font_name)
+                if normalized_name not in font_stats:
+                    font_stats[normalized_name] = {
                         "pages": set(),
                         "sizes": set(),
                         "occurrences": 0
                     }
-                font_stats[font_name]["pages"].add(text_obj.page)
-                font_stats[font_name]["sizes"].add(text_obj.font_size)
-                font_stats[font_name]["occurrences"] += 1
+                font_stats[normalized_name]["pages"].add(text_obj.page)
+                font_stats[normalized_name]["sizes"].add(text_obj.font_size)
+                font_stats[normalized_name]["occurrences"] += 1
 
             # Preparar informações de fontes
             fonts_list = []
             for font_key, font_data in fonts_dict.items():
-                usage = font_stats.get(font_key, {})
+                # Normalizar nome da fonte extraída para corresponder às estatísticas
+                normalized_font_name = _normalize_font_name(font_data.name)
+                usage = font_stats.get(normalized_font_name, {})
                 name_upper = font_data.name.upper() if font_data.name else ""
                 variants = []
                 if font_data.is_bold:
@@ -139,8 +177,9 @@ def export_objects(
                     variants.append("Black")
 
                 fonts_list.append({
-                    "name": font_data.name,
+                    "name": font_data.name,  # Nome original (com prefixo se houver)
                     "base_font": font_data.base_font,
+                    "normalized_name": normalized_font_name,  # Nome sem prefixo
                     "variants": variants,
                     "embedded": font_data.font_file_path is not None,
                     "encoding": getattr(font_data, 'encoding', ''),
@@ -820,6 +859,7 @@ def _edit_text_all_occurrences(
         )
 
     # Exibir aviso sobre fontes faltantes (se houver)
+    # NOTA: A confirmação será solicitada no CLI antes de chamar esta função
     if font_manager.has_missing_fonts():
         print(font_manager.get_missing_fonts_summary())
 

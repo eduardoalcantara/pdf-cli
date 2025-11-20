@@ -148,6 +148,40 @@ def export_objects(
         raise typer.Exit(1)
 
 
+def _normalize_font_name(font_name: str) -> str:
+    """
+    Normaliza o nome da fonte removendo prefixos de subset.
+
+    Os PDFs com fontes subset usam prefixos como "EAAAAB+SegoeUI-Bold",
+    mas os objetos de texto extraídos usam apenas "SegoeUI-Bold".
+    Esta função remove o prefixo para permitir correspondência correta.
+
+    Args:
+        font_name: Nome da fonte (pode conter prefixo de subset)
+
+    Returns:
+        str: Nome da fonte sem prefixo de subset
+
+    Exemplos:
+        "EAAAAB+SegoeUI-Bold" -> "SegoeUI-Bold"
+        "ABCDEF+Times-Roman" -> "Times-Roman"
+        "ArialMT" -> "ArialMT"
+        "Courier" -> "Courier"
+    """
+    if not font_name:
+        return font_name
+
+    # Padrão: prefixo de subset é sempre seguido de "+"
+    # Formato típico: "EAAAAB+SegoeUI-Bold" ou "ABCDEF+FontName"
+    if '+' in font_name:
+        # Pegar tudo depois do "+"
+        parts = font_name.split('+', 1)
+        if len(parts) > 1:
+            return parts[1]
+
+    return font_name
+
+
 @app.command("list-fonts")
 def list_fonts(
     pdf_path: str = typer.Argument(..., help="Caminho para o arquivo PDF"),
@@ -179,25 +213,29 @@ def list_fonts(
             # Extrair textos para obter estatísticas de uso
             text_objects = repo.extract_text_objects()
 
-            # Estatísticas de uso por fonte
+            # Estatísticas de uso por fonte (já normalizados pelo extract_text_objects)
             font_stats = {}
             for text_obj in text_objects:
                 font_name = text_obj.font_name
-                if font_name not in font_stats:
-                    font_stats[font_name] = {
-                        "name": font_name,
+                # Normalizar nome para garantir correspondência
+                normalized_name = _normalize_font_name(font_name)
+                if normalized_name not in font_stats:
+                    font_stats[normalized_name] = {
+                        "name": normalized_name,
                         "pages": set(),
                         "sizes": set(),
                         "occurrences": 0
                     }
-                font_stats[font_name]["pages"].add(text_obj.page)
-                font_stats[font_name]["sizes"].add(text_obj.font_size)
-                font_stats[font_name]["occurrences"] += 1
+                font_stats[normalized_name]["pages"].add(text_obj.page)
+                font_stats[normalized_name]["sizes"].add(text_obj.font_size)
+                font_stats[normalized_name]["occurrences"] += 1
 
             # Preparar dados para exibição
             fonts_info = []
             for font_key, font_data in fonts_dict.items():
-                usage = font_stats.get(font_key, {})
+                # Normalizar nome da fonte extraída para corresponder às estatísticas
+                normalized_font_name = _normalize_font_name(font_data.name)
+                usage = font_stats.get(normalized_font_name, {})
 
                 # Detectar variantes adicionais
                 name_upper = font_data.name.upper() if font_data.name else ""
@@ -215,9 +253,13 @@ def list_fonts(
                 if "BLACK" in name_upper:
                     variants_detected.append("Black")
 
+                # Usar nome normalizado para exibição (mais limpo)
+                display_name = normalized_font_name if normalized_font_name != font_data.name else font_data.name
+
                 font_info = {
-                    "name": font_data.name,
+                    "name": font_data.name,  # Nome original (com prefixo se houver)
                     "base_font": font_data.base_font,
+                    "normalized_name": normalized_font_name,  # Nome sem prefixo
                     "variants": variants_detected,
                     "embedded": font_data.font_file_path is not None,
                     "encoding": getattr(font_data, 'encoding', ''),
@@ -240,7 +282,9 @@ def list_fonts(
                 variant_str = f" ([{', '.join(font_info['variants'])}])" if font_info['variants'] else ""
                 embedded_str = " [green]✓ embeddada[/green]" if font_info["embedded"] else " [yellow]⚠ não embeddada[/yellow]"
 
-                console.print(f"{i}. [bold]{font_info['name'] or 'N/A'}[/bold]{variant_str}{embedded_str}")
+                # Usar nome normalizado para exibição (mais legível)
+                display_name = font_info.get('normalized_name', font_info['name']) or 'N/A'
+                console.print(f"{i}. [bold]{display_name}[/bold]{variant_str}{embedded_str}")
 
                 if font_info["usage"]["occurrences"] > 0:
                     console.print(f"   Usada em: {font_info['usage']['occurrences']} ocorrência(s)")
@@ -292,6 +336,31 @@ def list_fonts(
         raise typer.Exit(1)
 
 
+def _validate_input_output_paths(input_path: str, output_path: str) -> None:
+    """
+    Valida que os caminhos de entrada e saída não são o mesmo arquivo.
+    
+    Args:
+        input_path: Caminho do arquivo de entrada
+        output_path: Caminho do arquivo de saída
+        
+    Raises:
+        PDFCliException: Se os caminhos forem iguais (mesmo arquivo)
+    """
+    from pathlib import Path
+    from core.exceptions import PDFCliException
+    
+    # Resolver caminhos absolutos e normalizar
+    input_abs = Path(input_path).resolve()
+    output_abs = Path(output_path).resolve()
+    
+    if input_abs == output_abs:
+        raise PDFCliException(
+            f"Erro: O arquivo de entrada e saída são o mesmo: {input_path}\n"
+            f"   Use um nome diferente para o arquivo de saída."
+        )
+
+
 @app.command("edit-text")
 def edit_text(
     pdf_path: str = typer.Argument(..., help="Caminho para o arquivo PDF de entrada"),
@@ -324,6 +393,9 @@ def edit_text(
         pdf-cli edit-text input.pdf output.pdf --content "ALCANTARA" --new-content "ALCÂNTARA" --all-occurrences
     """
     try:
+        # Validar que entrada e saída não são o mesmo arquivo
+        _validate_input_output_paths(pdf_path, output)
+        
         if all_occurrences:
             console.print("\n[bold yellow]Processando ocorrências...[/bold yellow]\n")
             result_path, details = services.edit_text(

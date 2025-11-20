@@ -238,40 +238,70 @@ class FontManager:
 
         lines = []
         lines.append("\n" + "="*80)
-        lines.append("⚠️  ATENÇÃO: FONTES FALTANTES DETECTADAS")
+        lines.append("⚠️  ATENÇÃO: FONTES NÃO ENCONTRADAS NO SISTEMA OPERACIONAL")
         lines.append("="*80)
         lines.append("")
-        lines.append(f"O PDF-CLI detectou {len(self.missing_fonts)} fonte(s) que não puderam ser")
-        lines.append("preservadas perfeitamente devido à ausência no sistema.")
+        lines.append(f"O PDF-CLI detectou que {len(self.missing_fonts)} fonte(s) usada(s) no PDF")
+        lines.append("não estão instaladas no seu sistema operacional.")
+        lines.append("")
+        lines.append("📌 O QUE ISSO SIGNIFICA:")
+        lines.append("   • A fonte está presente no PDF original")
+        lines.append("   • Mas não está instalada no seu Windows/Linux/Mac")
+        lines.append("   • Para editar o texto preservando o LAYOUT e APARÊNCIA original,")
+        lines.append("     você precisa instalar a fonte no sistema operacional")
+        lines.append("")
+        lines.append("🔍 FONTES QUE PRECISAM SER INSTALADAS:")
         lines.append("")
 
         for i, req in enumerate(self.missing_fonts, 1):
             lines.append(f"{i}. Fonte: {req.font_name}")
             if req.variant:
                 lines.append(f"   Variante: {req.variant}")
-            lines.append(f"   Usada em: {req.occurrences} ocorrência(s)")
-            lines.append(f"   Páginas: {', '.join(map(str, sorted(req.pages)))}")
+            lines.append(f"   Usada em: {req.occurrences} ocorrência(s) de texto editado")
+            if req.pages:
+                pages_str = ', '.join(map(str, sorted(req.pages)[:10]))
+                if len(req.pages) > 10:
+                    pages_str += f" (+{len(req.pages)-10} mais)"
+                lines.append(f"   Páginas: {pages_str}")
 
             if req.found_font:
-                lines.append(f"   ⚠️  Usando fallback: {req.found_font}")
+                lines.append(f"   ⚠️  Sistema está usando: {req.found_font} (pode alterar aparência)")
             else:
-                lines.append(f"   ❌ Nenhuma fonte similar encontrada")
+                lines.append(f"   ❌ Nenhuma fonte similar encontrada (pode alterar aparência)")
 
             lines.append("")
-            lines.append(f"   📥 Para instalar esta fonte:")
+            lines.append(f"   📥 COMO INSTALAR A FONTE {req.font_name}:")
+            step_num = 1
             if req.download_url:
-                lines.append(f"      Download: {req.download_url}")
+                lines.append(f"      {step_num}. Baixe a fonte em: {req.download_url}")
+                step_num += 1
+            else:
+                lines.append(f"      {step_num}. Baixe a fonte {req.font_name} (.ttf ou .otf)")
+                step_num += 1
             lines.append("")
             if req.installation_instructions:
-                for line in req.installation_instructions.split('\n'):
-                    lines.append(f"      {line}")
+                # Remover numeração existente das instruções e renumerar
+                instruction_lines = [line.strip() for line in req.installation_instructions.split('\n') if line.strip()]
+                for line in instruction_lines:
+                    # Remover numeração existente (ex: "1. " ou "1) " no início)
+                    line_clean = line
+                    # Se começa com número seguido de ponto, parêntese, etc., remover
+                    import re
+                    line_clean = re.sub(r'^\d+[\.\)\-\:]\s*', '', line_clean)
+                    lines.append(f"      {step_num}. {line_clean}")
+                    step_num += 1
             lines.append("")
             lines.append("-" * 80)
             lines.append("")
 
-        lines.append("💡 RECOMENDAÇÃO:")
-        lines.append("   Instale as fontes listadas acima e execute o comando novamente")
-        lines.append("   para garantir preservação perfeita das fontes originais.")
+        lines.append("💡 IMPORTANTE:")
+        lines.append("   • Se você não instalar as fontes, o PDF-CLI usará fontes similares")
+        lines.append("     que podem ALTERAR a aparência (tamanho, espessura, espaçamento)")
+        lines.append("   • Para garantir que o texto editado fique IDÊNTICO ao original:")
+        lines.append("     1. Instale as fontes listadas acima no seu sistema operacional")
+        lines.append("     2. Execute o comando de edição novamente")
+        lines.append("   • Após instalar, você pode usar --strict-fonts para bloquear")
+        lines.append("     operações caso alguma fonte ainda não esteja disponível")
         lines.append("")
         lines.append("="*80)
 
