@@ -35,14 +35,14 @@ from cli.help import (
     print_help_export_text, print_help_export_objects, print_help_export_images, print_help_list_fonts,
     print_help_edit_text, print_help_edit_table, print_help_replace_image, print_help_insert_object,
     print_help_restore_from_json, print_help_edit_metadata, print_help_merge, print_help_delete_pages,
-    print_help_split, print_help_md_to_pdf
+    print_help_split, print_help_md_to_pdf, print_help_pdf_to_md, print_help_pdf_to_html, print_help_pdf_to_txt
 )
 from cli.parser import parse_args
 from cli.commands import (
     cmd_export_text, cmd_export_objects, cmd_export_images, cmd_list_fonts,
     cmd_edit_text, cmd_edit_table, cmd_replace_image, cmd_insert_object,
     cmd_restore_from_json, cmd_edit_metadata, cmd_merge, cmd_delete_pages,
-    cmd_split, cmd_md_to_pdf
+    cmd_split, cmd_md_to_pdf, cmd_pdf_to_md, cmd_pdf_to_html, cmd_pdf_to_txt
 )
 
 
@@ -62,6 +62,9 @@ COMMAND_MAP = {
     'delete-pages': cmd_delete_pages,
     'split': cmd_split,
     'md-to-pdf': cmd_md_to_pdf,
+    'pdf-to-md': cmd_pdf_to_md,
+    'pdf-to-html': cmd_pdf_to_html,
+    'pdf-to-txt': cmd_pdf_to_txt,
 }
 
 # Mapa de comandos para help
@@ -80,6 +83,9 @@ HELP_MAP = {
     'delete-pages': print_help_delete_pages,
     'split': print_help_split,
     'md-to-pdf': print_help_md_to_pdf,
+    'pdf-to-md': print_help_pdf_to_md,
+    'pdf-to-html': print_help_pdf_to_html,
+    'pdf-to-txt': print_help_pdf_to_txt,
 }
 
 
@@ -90,7 +96,7 @@ def main() -> int:
 
     # Versão global
     if parsed['version']:
-        print("PDF-cli versao 0.9.0 (Fase 9)")
+        print("PDF-cli versao 0.10.0 (Fase 10)")
         return 0
 
     # Help geral ou de comando específico

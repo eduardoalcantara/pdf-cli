@@ -577,6 +577,222 @@ def cmd_edit_text(args: Dict[str, Any]) -> int:
         return 1
 
 
+def cmd_pdf_to_md(args: Dict[str, Any]) -> int:
+    """Comando pdf-to-md: Converte arquivo PDF para Markdown."""
+    try:
+        # Validar argumentos posicionais
+        if len(args['positional']) < 2:
+            print_error("Argumentos insuficientes")
+            print("Sintaxe: pdf-cli pdf-to-md <entrada.pdf> <saida.md> [opcoes]")
+            print("Use --help para ver exemplos e detalhes")
+            return 1
+
+        pdf_path = args['positional'][0]
+        md_path = args['positional'][1]
+
+        # Validar arquivo de entrada
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            print_error(f"Arquivo PDF nao encontrado: {pdf_path}")
+            return 1
+
+        if not pdf_path.lower().endswith('.pdf'):
+            print_error(f"Arquivo de entrada deve ser .pdf: {pdf_path}")
+            return 1
+
+        # Validar arquivo de saída
+        if not md_path.lower().endswith('.md'):
+            print_error(f"Arquivo de saida deve ser .md: {md_path}")
+            return 1
+
+        # Validar que entrada e saída são diferentes
+        _validate_input_output_paths(pdf_path, md_path)
+
+        # Processar opções
+        verbose = has_flag(args, 'verbose', 'l')
+
+        # Importar converter
+        from app.pdf_converter import convert_pdf_to_markdown
+
+        # Executar conversão
+        if verbose:
+            print(f"[INFO] Convertendo {pdf_path} para {md_path}...")
+
+        result = convert_pdf_to_markdown(
+            pdf_path=pdf_path,
+            md_path=md_path,
+            verbose=verbose
+        )
+
+        if result['status'] == 'success':
+            print_success("Conversao concluida com sucesso")
+            print(f"  Entrada: {pdf_path}")
+            print(f"  Saida: {md_path}")
+            if result.get('pages'):
+                print(f"  Paginas processadas: {result['pages']}")
+            return 0
+        else:
+            print_error(f"Erro na conversao: {result.get('error', 'Erro desconhecido')}")
+            return 1
+
+    except FileNotFoundError as e:
+        print_error(str(e))
+        return 1
+    except ValueError as e:
+        print_error(str(e))
+        return 1
+    except Exception as e:
+        print_error(f"Erro inesperado: {str(e)}")
+        if verbose or has_flag(args, 'verbose', 'l'):
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+def cmd_pdf_to_html(args: Dict[str, Any]) -> int:
+    """Comando pdf-to-html: Converte arquivo PDF para HTML."""
+    try:
+        # Validar argumentos posicionais
+        if len(args['positional']) < 2:
+            print_error("Argumentos insuficientes")
+            print("Sintaxe: pdf-cli pdf-to-html <entrada.pdf> <saida.html> [opcoes]")
+            print("Use --help para ver exemplos e detalhes")
+            return 1
+
+        pdf_path = args['positional'][0]
+        html_path = args['positional'][1]
+
+        # Validar arquivo de entrada
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            print_error(f"Arquivo PDF nao encontrado: {pdf_path}")
+            return 1
+
+        if not pdf_path.lower().endswith('.pdf'):
+            print_error(f"Arquivo de entrada deve ser .pdf: {pdf_path}")
+            return 1
+
+        # Validar arquivo de saída
+        if not html_path.lower().endswith(('.html', '.htm')):
+            print_error(f"Arquivo de saida deve ser .html ou .htm: {html_path}")
+            return 1
+
+        # Validar que entrada e saída são diferentes
+        _validate_input_output_paths(pdf_path, html_path)
+
+        # Processar opções
+        verbose = has_flag(args, 'verbose', 'l')
+
+        # Importar converter
+        from app.pdf_converter import convert_pdf_to_html
+
+        # Executar conversão
+        if verbose:
+            print(f"[INFO] Convertendo {pdf_path} para {html_path}...")
+
+        result = convert_pdf_to_html(
+            pdf_path=pdf_path,
+            html_path=html_path,
+            verbose=verbose
+        )
+
+        if result['status'] == 'success':
+            print_success("Conversao concluida com sucesso")
+            print(f"  Entrada: {pdf_path}")
+            print(f"  Saida: {html_path}")
+            if result.get('pages'):
+                print(f"  Paginas processadas: {result['pages']}")
+            return 0
+        else:
+            print_error(f"Erro na conversao: {result.get('error', 'Erro desconhecido')}")
+            return 1
+
+    except FileNotFoundError as e:
+        print_error(str(e))
+        return 1
+    except ValueError as e:
+        print_error(str(e))
+        return 1
+    except Exception as e:
+        print_error(f"Erro inesperado: {str(e)}")
+        if verbose or has_flag(args, 'verbose', 'l'):
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+def cmd_pdf_to_txt(args: Dict[str, Any]) -> int:
+    """Comando pdf-to-txt: Converte arquivo PDF para texto puro."""
+    try:
+        # Validar argumentos posicionais
+        if len(args['positional']) < 2:
+            print_error("Argumentos insuficientes")
+            print("Sintaxe: pdf-cli pdf-to-txt <entrada.pdf> <saida.txt> [opcoes]")
+            print("Use --help para ver exemplos e detalhes")
+            return 1
+
+        pdf_path = args['positional'][0]
+        txt_path = args['positional'][1]
+
+        # Validar arquivo de entrada
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            print_error(f"Arquivo PDF nao encontrado: {pdf_path}")
+            return 1
+
+        if not pdf_path.lower().endswith('.pdf'):
+            print_error(f"Arquivo de entrada deve ser .pdf: {pdf_path}")
+            return 1
+
+        # Validar arquivo de saída
+        if not txt_path.lower().endswith('.txt'):
+            print_error(f"Arquivo de saida deve ser .txt: {txt_path}")
+            return 1
+
+        # Validar que entrada e saída são diferentes
+        _validate_input_output_paths(pdf_path, txt_path)
+
+        # Processar opções
+        verbose = has_flag(args, 'verbose', 'l')
+
+        # Importar converter
+        from app.pdf_converter import convert_pdf_to_txt
+
+        # Executar conversão
+        if verbose:
+            print(f"[INFO] Convertendo {pdf_path} para {txt_path}...")
+
+        result = convert_pdf_to_txt(
+            pdf_path=pdf_path,
+            txt_path=txt_path,
+            verbose=verbose
+        )
+
+        if result['status'] == 'success':
+            print_success("Conversao concluida com sucesso")
+            print(f"  Entrada: {pdf_path}")
+            print(f"  Saida: {txt_path}")
+            if result.get('pages'):
+                print(f"  Paginas processadas: {result['pages']}")
+            return 0
+        else:
+            print_error(f"Erro na conversao: {result.get('error', 'Erro desconhecido')}")
+            return 1
+
+    except FileNotFoundError as e:
+        print_error(str(e))
+        return 1
+    except ValueError as e:
+        print_error(str(e))
+        return 1
+    except Exception as e:
+        print_error(f"Erro inesperado: {str(e)}")
+        if verbose or has_flag(args, 'verbose', 'l'):
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
 # Placeholder para comandos restantes - serão adicionados em seguida
 def cmd_edit_table(args: Dict[str, Any]) -> int:
     """Comando edit-table: Edita célula de tabela no PDF."""

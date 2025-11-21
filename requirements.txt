@@ -13,6 +13,11 @@ markdown2>=2.4.0  # Conversão de Markdown para HTML
 weasyprint>=59.0  # Conversão de HTML para PDF (preferido, mas requer libs do sistema no Windows)
 xhtml2pdf>=0.2.17  # Fallback para HTML->PDF (portável, funciona no Windows sem dependências externas)
 
+# Conversão PDF para Markdown/HTML (Fase 10)
+pdfplumber>=0.11.0  # Extração alternativa de texto do PDF (multiplataforma)
+beautifulsoup4>=4.14.0  # Manipulação e estruturação HTML (multiplataforma)
+markdownify>=1.2.0  # Conversão HTML para Markdown (multiplataforma)
+
 # CLI e Interface
 # argparse está incluído na biblioteca padrão do Python (não precisa instalar)
 # Removido typer e rich para compatibilidade com terminais simples (CMD/PowerShell)
