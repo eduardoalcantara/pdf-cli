@@ -5,6 +5,12 @@
 PyMuPDF>=1.23.0  # Biblioteca principal para manipulação avançada de PDFs (fitz)
 PyPDF2>=3.0.0    # Biblioteca auxiliar para operações complementares de PDF
 
+# Processamento de Imagens
+Pillow>=10.0.0   # Manipulação de imagens (filtros grayscale, invert)
+
 # CLI e Interface
 # argparse está incluído na biblioteca padrão do Python (não precisa instalar)
 # Removido typer e rich para compatibilidade com terminais simples (CMD/PowerShell)
+
+# Build e Distribuição (opcional, instalado automaticamente pelos scripts)
+# PyInstaller>=5.0.0  # Gerador de executáveis standalone (instalado pelos scripts de build)
