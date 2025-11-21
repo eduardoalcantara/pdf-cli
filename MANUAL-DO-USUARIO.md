@@ -1,6 +1,6 @@
 # Manual do Usuário - PDF-cli
 
-**Versão:** 0.8.0
+**Versão:** 0.9.0
 **Data:** 20/11/2025
 **PDF-cli - Ferramenta CLI para Edição Estrutural de PDFs**
 
@@ -15,11 +15,12 @@
 5. [Comandos de Extração](#comandos-de-extração)
 6. [Comandos de Edição](#comandos-de-edição)
 7. [Comandos de Manipulação](#comandos-de-manipulação)
-8. [Exemplos Práticos](#exemplos-práticos)
-9. [Casos de Uso Comuns](#casos-de-uso-comuns)
-10. [Troubleshooting](#troubleshooting)
-11. [FAQ - Perguntas Frequentes](#faq---perguntas-frequentes)
-12. [Glossário](#glossário)
+8. [Comandos de Conversão](#comandos-de-conversão)
+9. [Exemplos Práticos](#exemplos-práticos)
+10. [Casos de Uso Comuns](#casos-de-uso-comuns)
+11. [Troubleshooting](#troubleshooting)
+12. [FAQ - Perguntas Frequentes](#faq---perguntas-frequentes)
+13. [Glossário](#glossário)
 
 ---
 
@@ -37,6 +38,7 @@ O **PDF-cli** é uma ferramenta de linha de comando (CLI) para edição e manipu
 - ✅ Excluir páginas específicas
 - ✅ Editar metadados (título, autor, etc.)
 - ✅ Listar fontes usadas no documento
+- ✅ Converter arquivos Markdown (.md) para PDF
 
 ### Para quem é esta ferramenta?
 
@@ -627,6 +629,162 @@ pdf-cli edit-metadata artigo.pdf artigo_organizado.pdf \
 
 ---
 
+## 📄 Comandos de Conversão
+
+### md-to-pdf
+
+Converte arquivos Markdown (`.md`) para PDF, mantendo formatação visual fiel.
+
+**Uso Básico:**
+```bash
+pdf-cli md-to-pdf documento.md documento.pdf
+```
+
+**Quando Usar:**
+- Converter documentação Markdown para PDF
+- Gerar relatórios a partir de templates Markdown
+- Criar PDFs a partir de arquivos de texto formatado
+- Automatizar geração de documentos
+
+#### Conversão com CSS Customizado
+
+Use um arquivo CSS personalizado para estilizar o PDF:
+
+```bash
+pdf-cli md-to-pdf manual.md manual.pdf --css styles/custom.css
+```
+
+**Exemplo de CSS customizado:**
+```css
+@page {
+    size: A4;
+    margin: 3cm;
+}
+
+body {
+    font-family: "Times New Roman", serif;
+    font-size: 12pt;
+}
+
+h1 {
+    color: #1a1a1a;
+    border-bottom: 3px solid #0066cc;
+}
+```
+
+#### Informações Detalhadas (Verbose)
+
+Veja informações sobre o processo de conversão:
+
+```bash
+pdf-cli md-to-pdf README.md README.pdf --verbose
+```
+
+**Informações Exibidas:**
+- Arquivo Markdown sendo lido
+- Conversão Markdown → HTML
+- Conversão HTML → PDF
+- Biblioteca usada (WeasyPrint ou xhtml2pdf)
+- Número de páginas geradas
+
+#### Suporte a Markdown
+
+O comando suporta:
+- ✅ **Títulos** (H1-H6)
+- ✅ **Texto formatado** (negrito, itálico, código inline)
+- ✅ **Listas** (ordenadas e não ordenadas)
+- ✅ **Blocos de código** (com syntax highlighting)
+- ✅ **Tabelas**
+- ✅ **Links** (internos e externos)
+- ✅ **Imagens** (locais e remotas, quando disponíveis)
+- ✅ **Citações** (blockquote)
+- ✅ **Divisores horizontais**
+- ✅ **Listas de tarefas** (checkboxes)
+
+#### Imagens
+
+**Imagens Locais:**
+- Devem estar no mesmo diretório do arquivo `.md`
+- Ou usar caminhos relativos corretos
+- Formatos suportados: PNG, JPG, GIF, SVG
+
+**Exemplo:**
+```markdown
+![Logo](logo.png)
+![Gráfico](imagens/grafico.png)
+```
+
+**Imagens Remotas:**
+- URLs são baixadas automaticamente
+- Requer conexão com internet
+
+**Exemplo:**
+```markdown
+![Logo Online](https://example.com/logo.png)
+```
+
+#### CSS Padrão
+
+O PDF gerado usa um CSS padrão profissional que inclui:
+- Página A4 com margens de 2cm
+- Tipografia clara (DejaVu Sans, Arial fallback)
+- Cabeçalhos estilizados com bordas
+- Blocos de código com fundo destacado
+- Tabelas com bordas e cabeçalhos destacados
+- Links clicáveis (quando possível)
+- Cores e espaçamentos profissionais
+
+#### Bibliotecas de Conversão
+
+O comando detecta automaticamente a melhor biblioteca disponível:
+
+**WeasyPrint (Preferido):**
+- Melhor qualidade de renderização
+- Funciona bem no Linux com dependências do sistema
+- No Linux: `sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0`
+- No Windows: Requer GTK instalado (não recomendado)
+
+**xhtml2pdf (Fallback):**
+- Portável, funciona em Windows e Linux
+- Não requer dependências externas do sistema
+- Instalação: `pip install xhtml2pdf`
+
+O comando faz fallback automático se WeasyPrint não estiver disponível.
+
+#### Exemplo Prático Completo
+
+**Cenário:** Converter documentação Markdown para PDF
+
+```bash
+# 1. Converter README para PDF
+pdf-cli md-to-pdf README.md README.pdf
+
+# 2. Converter com CSS customizado
+pdf-cli md-to-pdf manual.md manual.pdf --css styles/manual.css
+
+# 3. Converter com informações detalhadas
+pdf-cli md-to-pdf documento.md documento.pdf --verbose
+```
+
+#### Limitações
+
+- Markdown avançado (tabelas complexas, notas de rodapé) pode ter suporte limitado
+- Imagens muito grandes podem afetar o tamanho do PDF
+- Links para seções do documento podem não funcionar
+- Algumas extensões Markdown podem não ser suportadas
+- Imagens não encontradas geram aviso mas não impedem a conversão
+
+#### Logs
+
+A operação é registrada em `logs/` com:
+- Arquivos de entrada e saída
+- Número de páginas geradas
+- CSS usado (padrão ou customizado)
+- Biblioteca de conversão utilizada
+- Erros (se houver)
+
+---
+
 ## 🔧 Comandos de Manipulação
 
 ### merge
@@ -834,7 +992,23 @@ pdf-cli export-images documento.pdf --out imagens/
 # Depois, substituir no PDF usando replace-image
 ```
 
-### Exemplo 7: Atualizar Metadados para Organização
+### Exemplo 7: Converter Documentação Markdown para PDF
+
+**Cenário:** Você tem documentação em Markdown e precisa gerar PDFs para distribuição.
+
+**Solução:**
+```bash
+# Converter README para PDF
+pdf-cli md-to-pdf README.md README.pdf
+
+# Converter manual com CSS customizado
+pdf-cli md-to-pdf MANUAL.md MANUAL.pdf --css styles/manual.css
+
+# Converter com informações detalhadas
+pdf-cli md-to-pdf documento.md documento.pdf --verbose
+```
+
+### Exemplo 8: Atualizar Metadados para Organização
 
 **Cenário:** Você tem vários PDFs de artigos e quer organizá-los com metadados corretos.
 
@@ -1009,6 +1183,40 @@ pdf-cli edit-text documento.pdf documento_editado.pdf --content "A" --new-conten
 - Use ferramentas de reparo de PDF
 - Solicite uma nova cópia do arquivo
 
+### Problema: Erro ao converter Markdown para PDF
+
+**Causa:** Biblioteca de conversão não disponível ou dependências faltando.
+
+**Solução:**
+
+**Windows:**
+- O comando usa `xhtml2pdf` automaticamente (portável)
+- Se falhar, instale: `pip install xhtml2pdf`
+
+**Linux:**
+- Tenta usar `weasyprint` primeiro (melhor qualidade)
+- Se falhar, instale dependências: `sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0`
+- Ou use `xhtml2pdf` como alternativa: `pip install xhtml2pdf`
+
+### Problema: Imagens não aparecem no PDF
+
+**Causa:** Imagens não encontradas ou caminhos incorretos.
+
+**Solução:**
+- Verifique se as imagens estão no mesmo diretório do arquivo `.md`
+- Use caminhos relativos corretos
+- Verifique se os arquivos de imagem existem
+- O comando mostra avisos sobre imagens não encontradas
+
+### Problema: CSS customizado não aplicado
+
+**Causa:** Arquivo CSS não encontrado ou caminho incorreto.
+
+**Solução:**
+- Verifique se o caminho do CSS está correto
+- Use caminho absoluto se necessário
+- Verifique se o arquivo CSS existe e está acessível
+
 ### Problema: Comando muito lento
 
 **Causa:** PDF muito grande ou muitos objetos para processar.
@@ -1040,6 +1248,24 @@ Não, o PDF-cli é focado em edição e manipulação de PDFs existentes. Para c
 ### Posso editar tabelas?
 
 Atualmente não. A edição de tabelas requer detecção complexa da estrutura, que ainda não foi implementada. Esta funcionalidade está planejada para uma fase futura.
+
+### Como converter Markdown para PDF?
+
+Use o comando `md-to-pdf`:
+
+```bash
+pdf-cli md-to-pdf documento.md documento.pdf
+```
+
+O comando suporta CSS customizado e funciona em Windows e Linux. Veja a seção [Comandos de Conversão](#comandos-de-conversão) para mais detalhes.
+
+### Qual biblioteca é usada para converter Markdown?
+
+O comando detecta automaticamente:
+- **WeasyPrint** (preferido, melhor qualidade) - funciona no Linux
+- **xhtml2pdf** (fallback, portável) - funciona em Windows e Linux
+
+O fallback é automático se WeasyPrint não estiver disponível.
 
 ### O que fazer se a fonte mudar após edição?
 
@@ -1161,5 +1387,5 @@ Este manual cobre todas as funcionalidades principais do PDF-cli. Para informaç
 ---
 
 **Última Atualização:** 20/11/2025
-**Versão do Manual:** 1.0
-**Versão do PDF-cli:** 0.8.0
+**Versão do Manual:** 1.1
+**Versão do PDF-cli:** 0.9.0

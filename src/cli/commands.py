@@ -624,3 +624,77 @@ def cmd_split(args: Dict[str, Any]) -> int:
     """Comando split: Divide PDF em múltiplos arquivos."""
     print_error("Comando split ainda nao implementado neste formato")
     return 1
+
+
+def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
+    """Comando md-to-pdf: Converte arquivo Markdown para PDF."""
+    try:
+        # Validar argumentos posicionais
+        if len(args['positional']) < 2:
+            print_error("Argumentos insuficientes")
+            print("Sintaxe: pdf-cli md-to-pdf <entrada.md> <saida.pdf> [opcoes]")
+            print("Use --help para ver exemplos e detalhes")
+            return 1
+
+        md_path = args['positional'][0]
+        pdf_path = args['positional'][1]
+
+        # Validar arquivo de entrada
+        md_file = Path(md_path)
+        if not md_file.exists():
+            print_error(f"Arquivo markdown nao encontrado: {md_path}")
+            return 1
+
+        if not md_path.lower().endswith('.md'):
+            print_error(f"Arquivo de entrada deve ser .md: {md_path}")
+            return 1
+
+        # Validar arquivo de saída
+        if not pdf_path.lower().endswith('.pdf'):
+            print_error(f"Arquivo de saida deve ser .pdf: {pdf_path}")
+            return 1
+
+        # Validar que entrada e saída são diferentes
+        _validate_input_output_paths(md_path, pdf_path)
+
+        # Processar opções
+        css_path = get_flag_value(args, 'css')
+        verbose = has_flag(args, 'verbose', 'l')
+
+        # Importar converter
+        from app.md_converter import convert_md_to_pdf
+
+        # Executar conversão
+        if verbose:
+            print(f"[INFO] Convertendo {md_path} para {pdf_path}...")
+
+        result = convert_md_to_pdf(
+            md_path=md_path,
+            pdf_path=pdf_path,
+            css_path=css_path,
+            verbose=verbose
+        )
+
+        if result['status'] == 'success':
+            print_success("Conversao concluida com sucesso")
+            print(f"  Entrada: {md_path}")
+            print(f"  Saida: {pdf_path}")
+            if result.get('pages'):
+                print(f"  Paginas geradas: {result['pages']}")
+            return 0
+        else:
+            print_error(f"Erro na conversao: {result.get('error', 'Erro desconhecido')}")
+            return 1
+
+    except FileNotFoundError as e:
+        print_error(str(e))
+        return 1
+    except ValueError as e:
+        print_error(str(e))
+        return 1
+    except Exception as e:
+        print_error(f"Erro inesperado: {str(e)}")
+        if verbose or has_flag(args, 'verbose', 'l'):
+            import traceback
+            traceback.print_exc()
+        return 1

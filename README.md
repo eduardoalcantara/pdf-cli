@@ -2,8 +2,8 @@
 
 **PDF-cli** é uma ferramenta de linha de comando robusta e extensível para automação e edição avançada de arquivos PDF, totalmente desenvolvida em Python. Esta ferramenta foi criada para desenvolvedores e power users que desejam editar textos, manipular páginas, extrair metadados ricos e manter layouts visuais precisos de documentos PDF de maneira eficiente e programável.
 
-**Versão Atual:** 0.8.0 (Fase 8 - Distribuição Portátil e Scripts de Build Cross-platform)
-**Status:** ✅ **13 comandos implementados com operações REAIS** | ✅ **Executáveis standalone disponíveis para Windows e Linux**
+**Versão Atual:** 0.9.0 (Fase 9 - Novo Comando `md-to-pdf`)
+**Status:** ✅ **14 comandos implementados com operações REAIS** | ✅ **Executáveis standalone disponíveis para Windows e Linux**
 
 ---
 
@@ -74,6 +74,13 @@
 - **`split`**: Divide PDF em múltiplos arquivos
   - ✅ **IMPLEMENTAÇÃO REAL**: Cria múltiplos documentos por faixas de páginas
 
+### ✅ Conversão de Documentos
+- **`md-to-pdf`**: Converte arquivos Markdown (.md) para PDF
+  - ✅ **IMPLEMENTAÇÃO REAL**: Conversão MD → HTML → PDF com formatação preservada
+  - ✅ Suporte a CSS customizado via `--css`
+  - ✅ Sistema multiplataforma com fallback automático (WeasyPrint/xhtml2pdf)
+  - ✅ Suporta: títulos, listas, tabelas, blocos de código, imagens, links, citações
+
 ---
 
 ## 🚀 Instalação
@@ -116,8 +123,16 @@ python src/pdf_cli.py --help
 - **PyMuPDF** (fitz) >= 1.23.0 - Manipulação de PDFs
 - **PyPDF2** >= 3.0.0 - Operações complementares
 - **Pillow** >= 10.0.0 - Processamento de imagens (filtros)
+- **markdown2** >= 2.4.0 - Conversão Markdown → HTML (comando `md-to-pdf`)
+- **xhtml2pdf** >= 0.2.17 - Conversão HTML → PDF (portável, funciona em Windows e Linux)
+- **weasyprint** >= 59.0 - Conversão HTML → PDF (opcional, melhor qualidade, requer dependências do sistema)
 
 **Nota:** Executáveis standalone já incluem todas as dependências.
+
+**Para o comando `md-to-pdf`:**
+- **Windows**: Use `xhtml2pdf` (instalado automaticamente) - funciona sem dependências externas
+- **Linux**: Pode usar `weasyprint` (melhor qualidade) ou `xhtml2pdf` (portável)
+  - WeasyPrint no Linux: `sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0`
 
 ---
 
@@ -219,6 +234,19 @@ pdf-cli delete-pages input.pdf output.pdf --pages 1-5 --force
 ```bash
 pdf-cli split input.pdf --ranges 1-3,4-6 --out prefix_
 # Cria: prefix_1.pdf, prefix_2.pdf
+```
+
+### Converter Markdown para PDF
+
+```bash
+# Conversão básica
+pdf-cli md-to-pdf documento.md documento.pdf
+
+# Com CSS customizado
+pdf-cli md-to-pdf manual.md manual.pdf --css styles/custom.css
+
+# Com informações detalhadas
+pdf-cli md-to-pdf README.md README.pdf --verbose
 ```
 
 ---
@@ -471,8 +499,9 @@ pdf-cli delete-pages input.pdf output.pdf --pages 1-5
 | `merge` | ✅ | **REAL** | insert_pdf() implementado |
 | `delete-pages` | ✅ | **REAL** | Exclusão real de páginas |
 | `split` | ✅ | **REAL** | Divisão real em múltiplos PDFs |
+| `md-to-pdf` | ✅ | **REAL** | Conversão MD → HTML → PDF com formatação preservada |
 
-**Resultado:** ✅ **12 de 13 comandos funcionais** (edit-table pendente por limitação técnica)
+**Resultado:** ✅ **13 de 14 comandos funcionais** (edit-table pendente por limitação técnica)
 
 ### Cobertura de Testes
 
@@ -555,6 +584,7 @@ Cada modelo inclui métodos `to_dict()` e `from_dict()` para serialização JSON
 ## 🔗 Referências
 
 ### Documentação de Fases
+- [Relatório Fase 9](results/FASE-9-RELATORIO-FINAL.md) - Novo Comando `md-to-pdf`
 - [Relatório Fase 8](results/FASE-8-RELATORIO-FINAL.md) - Distribuição Portátil e Scripts de Build
 - [Relatório Fase 7](results/FASE-7-RELATORIO-FINAL.md) - HELP Avançado e Exemplos Práticos
 - [Relatório Fase 6](results/FASE-6-RELATORIO-TESTES-REAIS.md) - Testes Reais e Relatório de Auditoria
@@ -587,4 +617,4 @@ Para dúvidas, problemas ou sugestões:
 ---
 
 **Última Atualização:** 20/11/2025
-**Versão:** 0.8.0 (Fase 8 - Distribuição Portátil e Scripts de Build Cross-platform)
+**Versão:** 0.9.0 (Fase 9 - Novo Comando `md-to-pdf`)

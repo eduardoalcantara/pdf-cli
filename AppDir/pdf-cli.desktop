@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=PDF-cli
-Exec=pdf-cli
-Icon=pdf-cli
-Categories=Utility;
-Comment=CLI tool for PDF automation and editing
