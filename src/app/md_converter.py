@@ -7,6 +7,21 @@ usando markdown2 para MD→HTML e weasyprint/xhtml2pdf para HTML→PDF.
 Suporta Windows e Linux com fallback automático:
 - WeasyPrint (preferido, melhor qualidade, funciona no Linux com dependências do sistema)
 - xhtml2pdf (fallback portável, funciona em Windows e Linux sem dependências externas)
+
+Suporte a Emojis e Símbolos Unicode:
+- Detecta automaticamente a plataforma e usa fontes de emoji apropriadas
+- Windows: Segoe UI Emoji, Segoe UI Symbol
+- macOS: Apple Color Emoji
+- Linux: Noto Color Emoji, Noto Emoji
+- Fallback para fontes padrão se fontes de emoji não estiverem disponíveis
+- Suporte a caracteres box-drawing (├──, └──, │) com fontes monospace
+
+Limitações Conhecidas:
+- xhtml2pdf (fallback) tem limitações com Unicode complexo:
+  * Emojis podem aparecer como quadrados pretos
+  * Caracteres box-drawing podem ser renderizados incorretamente
+- WeasyPrint oferece melhor suporte a Unicode quando disponível
+- Recomendado usar WeasyPrint no Linux para melhor qualidade
 """
 
 from pathlib import Path
@@ -33,150 +48,246 @@ except ImportError:
     pass
 
 
-# CSS padrão para formatação do PDF
-DEFAULT_CSS = """
-@page {
+def _get_default_css() -> str:
+    """
+    Gera CSS padrão com suporte a emojis e caracteres especiais baseado na plataforma.
+
+    Inclui:
+    - Fontes de emoji por plataforma
+    - Fontes monospace com suporte a box-drawing characters (├──, └──, │)
+    - Suporte a símbolos Unicode especiais
+
+    Returns:
+        str: CSS completo com fontes apropriadas para a plataforma
+    """
+    system = platform.system()
+
+    # Fontes de emoji por plataforma
+    if system == 'Windows':
+        emoji_fonts = '"Segoe UI Emoji", "Segoe UI Symbol"'
+        # Fontes monospace com suporte a box-drawing no Windows
+        monospace_fonts = '"Consolas", "Courier New", "Lucida Console", monospace'
+    elif system == 'Darwin':  # macOS
+        emoji_fonts = '"Apple Color Emoji"'
+        monospace_fonts = '"Menlo", "Monaco", "Courier New", monospace'
+    else:  # Linux e outros
+        emoji_fonts = '"Noto Color Emoji", "Noto Emoji"'
+        # Fontes monospace com suporte a box-drawing no Linux
+        monospace_fonts = '"DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace'
+
+    # CSS padrão com suporte a emojis e caracteres especiais
+    return f"""
+@page {{
     size: A4;
     margin: 2cm;
-}
+}}
 
-body {
-    font-family: "DejaVu Sans", Arial, sans-serif;
+body {{
+    font-family: {emoji_fonts}, "DejaVu Sans", Arial, sans-serif;
     font-size: 11pt;
     line-height: 1.6;
     color: #333;
-}
+    /* Garantir que Unicode seja preservado */
+    unicode-bidi: embed;
+}}
 
-h1 {
+h1 {{
     font-size: 24pt;
     color: #2c3e50;
     margin-top: 1em;
     margin-bottom: 0.5em;
     border-bottom: 2px solid #3498db;
     padding-bottom: 0.3em;
-}
+}}
 
-h2 {
+h2 {{
     font-size: 20pt;
     color: #34495e;
     margin-top: 0.8em;
     margin-bottom: 0.4em;
     border-bottom: 1px solid #bdc3c7;
     padding-bottom: 0.2em;
-}
+}}
 
-h3 {
+h3 {{
     font-size: 16pt;
     color: #34495e;
     margin-top: 0.6em;
     margin-bottom: 0.3em;
-}
+}}
 
-h4 {
+h4 {{
     font-size: 14pt;
     color: #34495e;
     margin-top: 0.5em;
     margin-bottom: 0.3em;
-}
+}}
 
-h5, h6 {
+h5, h6 {{
     font-size: 12pt;
     color: #34495e;
     margin-top: 0.4em;
     margin-bottom: 0.2em;
-}
+}}
 
-p {
+p {{
     margin: 0.5em 0;
     text-align: justify;
-}
+    /* Preservar caracteres especiais e emojis */
+    font-family: {emoji_fonts}, "DejaVu Sans", Arial, sans-serif;
+}}
 
-ul, ol {
+/* Preservar estrutura de diretórios - usar monospace para blocos de texto */
+.directory-structure {{
+    font-family: {monospace_fonts};
+    background-color: #f8f8f8;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    padding: 1em;
+    margin: 1em 0;
+    white-space: pre;
+    font-size: 9pt;
+    line-height: 1.4;
+    overflow-x: auto;
+}}
+
+ul, ol {{
     margin: 0.5em 0;
     padding-left: 2em;
-}
+}}
 
-li {
+li {{
     margin: 0.3em 0;
-}
+}}
 
-code {
-    font-family: "Courier New", monospace;
+code {{
+    font-family: {monospace_fonts};
     font-size: 10pt;
     background-color: #f4f4f4;
     padding: 0.1em 0.3em;
     border-radius: 3px;
-}
+    /* Preservar espaços e quebras de linha */
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}}
 
-pre {
+pre {{
     background-color: #f8f8f8;
     border: 1px solid #ddd;
     border-radius: 5px;
     padding: 1em;
     overflow-x: auto;
-    font-family: "Courier New", monospace;
+    font-family: {monospace_fonts};
     font-size: 9pt;
     line-height: 1.4;
-}
+    /* Preservar formatação e caracteres especiais */
+    white-space: pre;
+    font-variant-ligatures: none;
+}}
 
-pre code {
+pre code {{
     background-color: #f8f8f8;
     padding: 0;
     border-radius: 0;
-}
+}}
 
-blockquote {
+blockquote {{
     border-left: 4px solid #3498db;
     margin: 1em 0;
     padding-left: 1em;
     color: #7f8c8d;
     font-style: italic;
-}
+}}
 
-table {
+table {{
     border-collapse: collapse;
     width: 100%;
     margin: 1em 0;
-}
+}}
 
-th, td {
+th, td {{
     border: 1px solid #ddd;
     padding: 0.5em;
     text-align: left;
-}
+}}
 
-th {
+th {{
     background-color: #3498db;
     color: white;
     font-weight: bold;
-}
+}}
 
-tr:nth-child(even) {
+tr:nth-child(even) {{
     background-color: #f9f9f9;
-}
+}}
 
-img {
+img {{
     max-width: 100%;
     height: auto;
     margin: 1em 0;
     display: block;
-}
+}}
 
-a {
+a {{
     color: #3498db;
     text-decoration: none;
-}
+}}
 
-a:hover {
+a:hover {{
     text-decoration: underline;
-}
+}}
 
-hr {
+hr {{
     border: none;
     border-top: 1px solid #ddd;
     margin: 2em 0;
-}
+}}
 """
+
+# CSS padrão (mantido para compatibilidade, mas usar _get_default_css() é recomendado)
+DEFAULT_CSS = _get_default_css()
+
+
+def _process_html_for_special_chars(html_content: str) -> str:
+    """
+    Processa HTML para preservar estruturas de diretórios e caracteres especiais.
+
+    Detecta parágrafos com box-drawing characters (├──, └──, │) e os converte
+    em blocos <pre> para garantir renderização correta com fontes monospace.
+
+    Args:
+        html_content: Conteúdo HTML gerado do Markdown
+
+    Returns:
+        str: HTML processado com estruturas de diretórios preservadas
+    """
+    import re
+
+    # Caracteres box-drawing comuns em estruturas de diretórios
+    box_chars_pattern = r'[├└│─┬┴┼┐┌┘└]'
+
+    # Encontrar parágrafos que contêm estruturas de diretórios
+    # Padrão: <p>linha com box-drawing</p> seguido de mais linhas similares
+    def replace_directory_blocks(match):
+        """Substitui blocos de parágrafos com box-drawing por <pre>"""
+        full_match = match.group(0)
+        # Extrair apenas o conteúdo (sem tags <p>)
+        content = re.sub(r'</?p[^>]*>', '', full_match)
+        content = re.sub(r'<br\s*/?>', '\n', content)  # Converter <br> em quebras de linha
+        # Limpar espaços extras mas preservar estrutura
+        lines = [line.rstrip() for line in content.split('\n') if line.strip()]
+        if lines:
+            return f'<pre class="directory-structure">\n' + '\n'.join(lines) + '\n</pre>'
+        return full_match
+
+    # Padrão para detectar blocos de parágrafos com box-drawing
+    # Procura por sequências de <p> que contêm box-drawing characters
+    pattern = r'(<p[^>]*>.*?' + box_chars_pattern + r'.*?</p>(?:\s*<p[^>]*>.*?' + box_chars_pattern + r'.*?</p>)*)'
+
+    # Aplicar substituição
+    processed = re.sub(pattern, replace_directory_blocks, html_content, flags=re.DOTALL | re.IGNORECASE)
+
+    return processed
 
 
 def _convert_with_xhtml2pdf(
@@ -198,8 +309,8 @@ def _convert_with_xhtml2pdf(
     """
     from io import BytesIO
 
-    # Carregar CSS (customizado ou padrão)
-    css_content = DEFAULT_CSS
+    # Carregar CSS (customizado ou padrão com suporte a emojis)
+    css_content = _get_default_css()
     if css_path:
         css_file = Path(css_path)
         if not css_file.exists():
@@ -321,6 +432,9 @@ def convert_md_to_pdf(
             ]
         )
 
+        # Processar HTML para preservar estruturas de diretórios e caracteres especiais
+        html_content = _process_html_for_special_chars(html_content)
+
         # Criar HTML completo com CSS
         full_html = f"""
 <!DOCTYPE html>
@@ -362,9 +476,9 @@ def convert_md_to_pdf(
                     css_obj = CSS(string=css_content)
                 else:
                     if verbose:
-                        print("[INFO] Usando CSS padrao (WeasyPrint)")
+                        print("[INFO] Usando CSS padrao (WeasyPrint) com suporte a emojis")
 
-                    css_obj = CSS(string=DEFAULT_CSS)
+                    css_obj = CSS(string=_get_default_css())
 
                 html_doc = HTML(string=full_html, base_url=base_url)
                 html_doc.write_pdf(pdf_path, stylesheets=[css_obj])
