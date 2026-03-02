@@ -876,6 +876,12 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
         # Processar opções
         css_path = get_flag_value(args, 'css')
         verbose = has_flag(args, 'verbose', 'l')
+        mermaid_theme = get_flag_value(args, 'mermaid-theme', default='default')
+        disable_mermaid = has_flag(args, 'disable-mermaid')
+
+        if not isinstance(mermaid_theme, str) or not mermaid_theme.strip():
+            print_error("Valor invalido para --mermaid-theme. Informe um tema valido.")
+            return 1
 
         # Importar converter
         from app.md_converter import convert_md_to_pdf
@@ -888,7 +894,9 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
             md_path=md_path,
             pdf_path=pdf_path,
             css_path=css_path,
-            verbose=verbose
+            verbose=verbose,
+            mermaid_theme=mermaid_theme.strip(),
+            enable_mermaid=not disable_mermaid,
         )
 
         if result['status'] == 'success':
@@ -897,6 +905,8 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
             print(f"  Saida: {pdf_path}")
             if result.get('pages'):
                 print(f"  Paginas geradas: {result['pages']}")
+            if result.get('mermaid_diagrams') is not None:
+                print(f"  Diagramas Mermaid renderizados: {result['mermaid_diagrams']}")
             return 0
         else:
             print_error(f"Erro na conversao: {result.get('error', 'Erro desconhecido')}")

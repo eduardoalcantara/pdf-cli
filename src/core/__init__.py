@@ -10,6 +10,8 @@ Todas as classes estão disponíveis para importação direta.
 # Exceções
 from .exceptions import (
     PDFCliException,
+    MermaidRendererNotAvailableError,
+    MermaidRenderingError,
     PDFFileNotFoundError,
     PDFMalformedError,
     TextNotFoundError,
@@ -63,6 +65,8 @@ from .models import (
 __all__ = [
     # Exceções
     "PDFCliException",
+    "MermaidRendererNotAvailableError",
+    "MermaidRenderingError",
     "PDFFileNotFoundError",
     "PDFMalformedError",
     "TextNotFoundError",

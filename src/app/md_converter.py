@@ -4,6 +4,12 @@ Módulo MD Converter - Conversão de Markdown para PDF.
 Este módulo implementa a conversão de arquivos Markdown (.md) para PDF,
 usando markdown2 para MD→HTML e weasyprint/xhtml2pdf para HTML→PDF.
 
+Suporte a Mermaid.js:
+- Detecta blocos de código ```mermaid``` no Markdown
+- Renderiza cada diagrama como imagem PNG usando Mermaid CLI (mmdc)
+- Injeta as imagens no Markdown como data URI para preservar portabilidade
+- Erra de forma explícita quando houver Mermaid no documento sem renderer disponível
+
 Suporta Windows e Linux com fallback automático:
 - WeasyPrint (preferido, melhor qualidade, funciona no Linux com dependências do sistema)
 - xhtml2pdf (fallback portável, funciona em Windows e Linux sem dependências externas)
@@ -24,11 +30,19 @@ Limitações Conhecidas:
 - Recomendado usar WeasyPrint no Linux para melhor qualidade
 """
 
+import base64
+import os
 from pathlib import Path
-from typing import Optional
+import re
+import shlex
+import shutil
+import subprocess
+import tempfile
+from typing import List, Optional, Tuple
 import markdown2
 import platform
 from app.logging import get_logger
+from core.exceptions import MermaidRendererNotAvailableError, MermaidRenderingError
 
 # Tentar importar WeasyPrint (preferido, mas pode falhar no Windows sem dependências)
 WEASYPRINT_AVAILABLE = False
@@ -46,6 +60,165 @@ try:
     XHTML2PDF_AVAILABLE = True
 except ImportError:
     pass
+
+
+_MERMAID_BLOCK_PATTERN = re.compile(
+    r"^[ \t]*```[ \t]*mermaid[^\n]*\n(?P<code>.*?)(?:\n^[ \t]*```[ \t]*$)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL
+)
+
+
+def _resolve_mermaid_renderer_command() -> List[str]:
+    """
+    Resolve o comando externo para renderizar diagramas Mermaid.
+
+    Ordem de prioridade:
+    1. Variável de ambiente `PDF_CLI_MERMAID_COMMAND` (comando completo)
+    2. Binário `mmdc` disponível no PATH
+    3. Fallback via `npx -y @mermaid-js/mermaid-cli`
+
+    Returns:
+        List[str]: Comando tokenizado para uso com subprocess.run
+
+    Raises:
+        MermaidRendererNotAvailableError: Se nenhum renderer estiver disponível
+    """
+    custom_command = os.getenv("PDF_CLI_MERMAID_COMMAND", "").strip()
+    if custom_command:
+        parsed_command = shlex.split(custom_command)
+        if parsed_command:
+            return parsed_command
+
+    mmdc_path = shutil.which("mmdc")
+    if mmdc_path:
+        return [mmdc_path]
+
+    npx_path = shutil.which("npx")
+    if npx_path:
+        return [npx_path, "-y", "@mermaid-js/mermaid-cli"]
+
+    raise MermaidRendererNotAvailableError()
+
+
+def _render_mermaid_diagram_to_data_uri(
+    mermaid_code: str,
+    diagram_index: int,
+    working_dir: Path,
+    mermaid_command: List[str],
+    mermaid_theme: str,
+) -> str:
+    """
+    Renderiza um diagrama Mermaid para PNG e retorna data URI.
+
+    Args:
+        mermaid_code: Código Mermaid (sem fences)
+        diagram_index: Índice do diagrama no documento (1-based)
+        working_dir: Diretório temporário para arquivos intermediários
+        mermaid_command: Comando do renderer Mermaid
+        mermaid_theme: Tema do Mermaid (default, dark, forest, neutral)
+
+    Returns:
+        str: Data URI no formato data:image/png;base64,...
+
+    Raises:
+        MermaidRenderingError: Se o renderer falhar ou não gerar arquivo de saída
+    """
+    input_file = working_dir / f"mermaid_diagram_{diagram_index}.mmd"
+    output_file = working_dir / f"mermaid_diagram_{diagram_index}.png"
+
+    input_file.write_text(mermaid_code, encoding="utf-8")
+
+    command = [
+        *mermaid_command,
+        "-i", str(input_file),
+        "-o", str(output_file),
+        "-t", mermaid_theme,
+    ]
+
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        error_detail = (completed.stderr or completed.stdout or "").strip()
+        if not error_detail:
+            error_detail = "sem detalhes adicionais do renderer."
+        raise MermaidRenderingError(
+            f"Falha ao renderizar diagrama Mermaid #{diagram_index}: {error_detail}"
+        )
+
+    if not output_file.exists():
+        raise MermaidRenderingError(
+            f"O renderer Mermaid nao gerou o arquivo esperado para o diagrama #{diagram_index}."
+        )
+
+    image_bytes = output_file.read_bytes()
+    if not image_bytes:
+        raise MermaidRenderingError(
+            f"O renderer Mermaid gerou arquivo vazio para o diagrama #{diagram_index}."
+        )
+
+    encoded_image = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded_image}"
+
+
+def _render_mermaid_blocks_in_markdown(
+    md_content: str,
+    verbose: bool = False,
+    mermaid_theme: str = "default",
+) -> Tuple[str, int]:
+    """
+    Converte todos os blocos ```mermaid``` em imagens embutidas no Markdown.
+
+    Args:
+        md_content: Conteúdo Markdown original
+        verbose: Se True, imprime logs de progresso
+        mermaid_theme: Tema aplicado na renderização Mermaid
+
+    Returns:
+        Tuple[str, int]:
+            - Markdown transformado (blocos Mermaid substituídos por imagens)
+            - Quantidade de blocos Mermaid renderizados
+
+    Raises:
+        MermaidRendererNotAvailableError: Quando há Mermaid sem renderer instalado
+        MermaidRenderingError: Se qualquer diagrama falhar na renderização
+    """
+    matches = list(_MERMAID_BLOCK_PATTERN.finditer(md_content))
+    if not matches:
+        return md_content, 0
+
+    mermaid_command = _resolve_mermaid_renderer_command()
+    if verbose:
+        print(f"[INFO] Renderer Mermaid detectado: {' '.join(mermaid_command)}")
+        print(f"[INFO] Blocos Mermaid encontrados: {len(matches)}")
+
+    transformed_parts: List[str] = []
+    last_end = 0
+
+    with tempfile.TemporaryDirectory(prefix="pdf_cli_mermaid_") as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        for index, match in enumerate(matches, start=1):
+            transformed_parts.append(md_content[last_end:match.start()])
+            mermaid_code = match.group("code").strip()
+
+            if not mermaid_code:
+                raise MermaidRenderingError(
+                    f"Bloco Mermaid #{index} esta vazio. Verifique o Markdown de entrada."
+                )
+
+            if verbose:
+                print(f"[INFO] Renderizando diagrama Mermaid #{index}...")
+
+            image_data_uri = _render_mermaid_diagram_to_data_uri(
+                mermaid_code=mermaid_code,
+                diagram_index=index,
+                working_dir=temp_dir,
+                mermaid_command=mermaid_command,
+                mermaid_theme=mermaid_theme,
+            )
+            transformed_parts.append(f"\n![Diagrama Mermaid {index}]({image_data_uri})\n")
+            last_end = match.end()
+
+    transformed_parts.append(md_content[last_end:])
+    return "".join(transformed_parts), len(matches)
 
 
 def _get_default_css() -> str:
@@ -368,7 +541,9 @@ def convert_md_to_pdf(
     md_path: str,
     pdf_path: str,
     css_path: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    mermaid_theme: str = "default",
+    enable_mermaid: bool = True,
 ) -> dict:
     """
     Converte um arquivo Markdown para PDF.
@@ -378,6 +553,8 @@ def convert_md_to_pdf(
         pdf_path: Caminho do arquivo PDF de saída (.pdf)
         css_path: Caminho opcional para arquivo CSS customizado
         verbose: Se True, exibe informações detalhadas
+        mermaid_theme: Tema Mermaid para blocos ```mermaid``` (default, dark, forest, neutral)
+        enable_mermaid: Se True, renderiza blocos Mermaid como imagens
 
     Returns:
         dict: Dicionário com informações sobre a conversão:
@@ -385,6 +562,7 @@ def convert_md_to_pdf(
             - input_file: Caminho do arquivo de entrada
             - output_file: Caminho do arquivo de saída
             - pages: Número de páginas geradas (se sucesso)
+            - mermaid_diagrams: Quantidade de diagramas Mermaid renderizados
             - error: Mensagem de erro (se falhou)
 
     Raises:
@@ -415,6 +593,19 @@ def convert_md_to_pdf(
             print(f"[INFO] Lendo arquivo markdown: {md_path}")
 
         md_content = md_file.read_text(encoding='utf-8')
+
+        # Pré-processar Mermaid antes da conversão Markdown -> HTML
+        mermaid_diagrams = 0
+        if enable_mermaid:
+            md_content, mermaid_diagrams = _render_mermaid_blocks_in_markdown(
+                md_content=md_content,
+                verbose=verbose,
+                mermaid_theme=mermaid_theme,
+            )
+            if verbose and mermaid_diagrams > 0:
+                print(f"[INFO] Diagramas Mermaid renderizados: {mermaid_diagrams}")
+        elif verbose:
+            print("[INFO] Renderizacao Mermaid desabilitada via parametro.")
 
         # Converter Markdown para HTML
         if verbose:
@@ -561,7 +752,8 @@ def convert_md_to_pdf(
             'status': 'success',
             'input_file': str(md_path),
             'output_file': str(pdf_path),
-            'pages': num_pages
+            'pages': num_pages,
+            'mermaid_diagrams': mermaid_diagrams,
         }
 
         # Log da operação
@@ -572,12 +764,19 @@ def convert_md_to_pdf(
             output_file=str(pdf_path),
             parameters={
                 'css_path': css_path,
-                'verbose': verbose
+                'verbose': verbose,
+                'mermaid_theme': mermaid_theme,
+                'enable_mermaid': enable_mermaid,
             },
             result={
-                'pages': num_pages
+                'pages': num_pages,
+                'mermaid_diagrams': mermaid_diagrams,
             },
-            notes=f"Conversao de Markdown para PDF concluida com sucesso. Paginas: {num_pages or 'N/A'}"
+            notes=(
+                "Conversao de Markdown para PDF concluida com sucesso. "
+                f"Paginas: {num_pages or 'N/A'}. "
+                f"Diagramas Mermaid: {mermaid_diagrams}."
+            )
         )
 
         return result
@@ -603,7 +802,9 @@ def convert_md_to_pdf(
             output_file=str(pdf_path),
             parameters={
                 'css_path': css_path,
-                'verbose': verbose
+                'verbose': verbose,
+                'mermaid_theme': mermaid_theme,
+                'enable_mermaid': enable_mermaid,
             },
             result={
                 'error': str(e)

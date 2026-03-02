@@ -634,6 +634,7 @@ pdf-cli edit-metadata artigo.pdf artigo_organizado.pdf \
 ### md-to-pdf
 
 Converte arquivos Markdown (`.md`) para PDF, mantendo formatação visual fiel.
+Tambem renderiza blocos Mermaid (`mermaid`) como imagens PNG no PDF.
 
 **Uso Básico:**
 ```bash
@@ -682,10 +683,29 @@ pdf-cli md-to-pdf README.md README.pdf --verbose
 
 **Informações Exibidas:**
 - Arquivo Markdown sendo lido
+- Detecção e renderização de diagramas Mermaid (quando houver)
 - Conversão Markdown → HTML
 - Conversão HTML → PDF
 - Biblioteca usada (WeasyPrint ou xhtml2pdf)
 - Número de páginas geradas
+
+#### Opções Mermaid
+
+```bash
+# Definir tema dos diagramas Mermaid
+pdf-cli md-to-pdf arquitetura.md arquitetura.pdf --mermaid-theme dark
+
+# Desabilitar renderização Mermaid
+pdf-cli md-to-pdf documento.md documento.pdf --disable-mermaid
+```
+
+**Observações:**
+- `--mermaid-theme` aceita temas comuns: `default`, `dark`, `forest`, `neutral`
+- Se houver bloco Mermaid e nenhum renderer instalado, o comando retorna erro claro
+- Renderers detectados automaticamente:
+  - `mmdc` no PATH
+  - `npx -y @mermaid-js/mermaid-cli`
+- Opcional: definir comando customizado pela variável `PDF_CLI_MERMAID_COMMAND`
 
 #### Suporte a Markdown
 
