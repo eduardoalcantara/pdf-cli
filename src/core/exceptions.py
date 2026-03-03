@@ -51,6 +51,36 @@ class MermaidRenderingError(PDFCliException):
         super().__init__(self.message)
 
 
+class PlantUMLRendererNotAvailableError(PDFCliException):
+    """
+    Exceção lançada quando nenhum renderer PlantUML está disponível no ambiente.
+
+    O comando `md-to-pdf` depende de um renderer externo para converter
+    blocos PlantUML e arquivos `.plantuml` em imagens PNG.
+    """
+
+    def __init__(self, message: Optional[str] = None):
+        self.message = message or (
+            "Renderer PlantUML nao encontrado. "
+            "Instale o comando `plantuml` no PATH ou defina "
+            "PDF_CLI_PLANTUML_COMMAND com um comando valido."
+        )
+        super().__init__(self.message)
+
+
+class PlantUMLRenderingError(PDFCliException):
+    """
+    Exceção lançada quando a renderização de um diagrama PlantUML falha.
+
+    Essa exceção representa erro real de conversão de código PlantUML para imagem,
+    incluindo sintaxe inválida, falha do processo externo ou saída PNG ausente.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+
+
 class PDFFileNotFoundError(PDFCliException):
     """
     Exceção lançada quando um arquivo PDF não é encontrado.

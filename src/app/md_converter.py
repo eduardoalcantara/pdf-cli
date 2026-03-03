@@ -10,6 +10,12 @@ Suporte a Mermaid.js:
 - Injeta as imagens no Markdown como data URI para preservar portabilidade
 - Erra de forma explícita quando houver Mermaid no documento sem renderer disponível
 
+Suporte a PlantUML:
+- Detecta blocos de código ```plantuml``` e ```plantxml``` no Markdown
+- Renderiza referências de imagem para arquivos `.plantuml`/`.puml` locais
+- Converte diagramas para PNG e embute como data URI no Markdown processado
+- Erra de forma explícita quando houver PlantUML sem renderer disponível
+
 Suporta Windows e Linux com fallback automático:
 - WeasyPrint (preferido, melhor qualidade, funciona no Linux com dependências do sistema)
 - xhtml2pdf (fallback portável, funciona em Windows e Linux sem dependências externas)
@@ -42,7 +48,12 @@ from typing import List, Optional, Tuple
 import markdown2
 import platform
 from app.logging import get_logger
-from core.exceptions import MermaidRendererNotAvailableError, MermaidRenderingError
+from core.exceptions import (
+    MermaidRendererNotAvailableError,
+    MermaidRenderingError,
+    PlantUMLRendererNotAvailableError,
+    PlantUMLRenderingError,
+)
 
 # Tentar importar WeasyPrint (preferido, mas pode falhar no Windows sem dependências)
 WEASYPRINT_AVAILABLE = False
@@ -66,6 +77,15 @@ _MERMAID_BLOCK_PATTERN = re.compile(
     r"^[ \t]*```[ \t]*mermaid[^\n]*\n(?P<code>.*?)(?:\n^[ \t]*```[ \t]*$)",
     re.IGNORECASE | re.MULTILINE | re.DOTALL
 )
+
+_PLANTUML_BLOCK_PATTERN = re.compile(
+    r"^[ \t]*```[ \t]*(?:plantuml|plantxml|puml|uml)[^\n]*\n(?P<code>.*?)(?:\n^[ \t]*```[ \t]*$)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL
+)
+
+_MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)]+)\)")
+
+_PLANTUML_FILE_EXTENSIONS = {".plantuml", ".puml", ".pu", ".iuml"}
 
 
 def _resolve_mermaid_renderer_command() -> List[str]:
@@ -219,6 +239,362 @@ def _render_mermaid_blocks_in_markdown(
 
     transformed_parts.append(md_content[last_end:])
     return "".join(transformed_parts), len(matches)
+
+
+def _resolve_plantuml_renderer_command() -> List[str]:
+    """
+    Resolve o comando externo para renderizar diagramas PlantUML.
+
+    Ordem de prioridade:
+    1. Variável de ambiente `PDF_CLI_PLANTUML_COMMAND` (comando completo)
+    2. Binário `plantuml` disponível no PATH
+
+    Returns:
+        List[str]: Comando tokenizado para uso com subprocess.run
+
+    Raises:
+        PlantUMLRendererNotAvailableError: Se nenhum renderer estiver disponível
+    """
+    custom_command = os.getenv("PDF_CLI_PLANTUML_COMMAND", "").strip()
+    if custom_command:
+        parsed_command = shlex.split(custom_command)
+        if parsed_command:
+            return parsed_command
+
+    plantuml_path = shutil.which("plantuml")
+    if plantuml_path:
+        return [plantuml_path]
+
+    raise PlantUMLRendererNotAvailableError()
+
+
+def _extract_markdown_target_path(markdown_target: str) -> str:
+    """
+    Extrai o caminho principal de um alvo Markdown de imagem/link.
+
+    Exemplos de alvos:
+    - `diagram.puml`
+    - `diagram.puml "Titulo"`
+    - `<diagram.puml>`
+
+    Args:
+        markdown_target: Conteúdo interno de `( ... )` no Markdown
+
+    Returns:
+        str: Caminho extraído (pode ser relativo, absoluto ou URL)
+    """
+    normalized_target = markdown_target.strip()
+    if not normalized_target:
+        return ""
+
+    if normalized_target.startswith("<") and normalized_target.endswith(">"):
+        return normalized_target[1:-1].strip()
+
+    try:
+        tokens = shlex.split(normalized_target)
+    except ValueError:
+        tokens = normalized_target.split()
+
+    if not tokens:
+        return ""
+    return tokens[0].strip()
+
+
+def _is_url_or_data_uri(target_path: str) -> bool:
+    """
+    Verifica se um alvo representa URL remota ou data URI.
+
+    Args:
+        target_path: Caminho/URL a ser validado
+
+    Returns:
+        bool: True para URL remota ou data URI
+    """
+    lowered = target_path.lower()
+    return "://" in lowered or lowered.startswith("data:")
+
+
+def _ensure_plantuml_wrapped_source(source_code: str, plantuml_theme: Optional[str]) -> str:
+    """
+    Garante que o código PlantUML tenha delimitadores e tema consistentes.
+
+    Regras aplicadas:
+    - Adiciona `@startuml` e `@enduml` se o usuário não incluiu
+    - Injeta `!theme <tema>` após `@startuml` quando tema foi informado
+      e ainda não existe diretiva de tema no código
+
+    Args:
+        source_code: Código PlantUML bruto
+        plantuml_theme: Tema opcional para o diagrama
+
+    Returns:
+        str: Código pronto para renderização no PlantUML
+
+    Raises:
+        PlantUMLRenderingError: Se o código estiver vazio
+    """
+    normalized = source_code.strip()
+    if not normalized:
+        raise PlantUMLRenderingError("Diagrama PlantUML vazio no Markdown de entrada.")
+
+    lowered = normalized.lower()
+    if "@startuml" not in lowered:
+        normalized = f"@startuml\n{normalized}\n@enduml"
+
+    lines = normalized.splitlines()
+    if plantuml_theme and plantuml_theme.strip():
+        theme_line_exists = any(line.strip().lower().startswith("!theme") for line in lines)
+        if not theme_line_exists:
+            start_index = 0
+            for index, line in enumerate(lines):
+                if line.strip().lower().startswith("@startuml"):
+                    start_index = index
+                    break
+            lines.insert(start_index + 1, f"!theme {plantuml_theme.strip()}")
+
+    wrapped = "\n".join(lines).strip()
+    if not wrapped.endswith("\n"):
+        wrapped += "\n"
+    return wrapped
+
+
+def _render_plantuml_source_to_data_uri(
+    source_code: str,
+    diagram_index: int,
+    working_dir: Path,
+    plantuml_command: List[str],
+    plantuml_theme: Optional[str],
+) -> str:
+    """
+    Renderiza um diagrama PlantUML para PNG e retorna data URI.
+
+    Args:
+        source_code: Código PlantUML do diagrama
+        diagram_index: Índice sequencial do diagrama no documento (1-based)
+        working_dir: Diretório temporário para arquivos intermediários
+        plantuml_command: Comando do renderer PlantUML
+        plantuml_theme: Tema opcional aplicado ao diagrama
+
+    Returns:
+        str: Data URI no formato data:image/png;base64,...
+
+    Raises:
+        PlantUMLRenderingError: Se houver falha no processo de renderização
+    """
+    input_file = working_dir / f"plantuml_diagram_{diagram_index}.puml"
+    output_file = input_file.with_suffix(".png")
+
+    prepared_source = _ensure_plantuml_wrapped_source(source_code, plantuml_theme)
+    input_file.write_text(prepared_source, encoding="utf-8")
+
+    command = [
+        *plantuml_command,
+        "-charset", "UTF-8",
+        "-tpng",
+        str(input_file),
+    ]
+
+    completed = subprocess.run(command, capture_output=True, check=False)
+    if completed.returncode != 0:
+        error_bytes = completed.stderr or completed.stdout or b""
+        error_detail = error_bytes.decode("utf-8", errors="replace").strip()
+        if not error_detail:
+            error_detail = "sem detalhes adicionais do renderer."
+        raise PlantUMLRenderingError(
+            f"Falha ao renderizar diagrama PlantUML #{diagram_index}: {error_detail}"
+        )
+
+    image_bytes: Optional[bytes] = None
+    if output_file.exists():
+        image_bytes = output_file.read_bytes()
+    elif completed.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+        # Compatibilidade com comandos customizados que usem modo pipe
+        image_bytes = completed.stdout
+
+    if not image_bytes:
+        raise PlantUMLRenderingError(
+            f"O renderer PlantUML nao gerou PNG valido para o diagrama #{diagram_index}."
+        )
+
+    encoded_image = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded_image}"
+
+
+def _render_plantuml_file_references(
+    md_content: str,
+    md_base_dir: Path,
+    working_dir: Path,
+    plantuml_command: List[str],
+    plantuml_theme: Optional[str],
+    verbose: bool = False,
+    initial_index: int = 0,
+) -> Tuple[str, int]:
+    """
+    Renderiza referências Markdown de imagem para arquivos `.plantuml`/`.puml`.
+
+    Args:
+        md_content: Markdown atual
+        md_base_dir: Diretório base do markdown de entrada (para resolver relativos)
+        working_dir: Diretório temporário para PNGs intermediários
+        plantuml_command: Comando do renderer PlantUML
+        plantuml_theme: Tema opcional aplicado aos diagramas
+        verbose: Se True, exibe logs de progresso
+        initial_index: Índice inicial para numeração de diagramas
+
+    Returns:
+        Tuple[str, int]:
+            - Markdown com referências `.plantuml` convertidas em data URI
+            - Quantidade de referências renderizadas
+
+    Raises:
+        PlantUMLRenderingError: Se arquivo `.plantuml` não existir ou renderização falhar
+    """
+    rendered_count = 0
+    current_index = initial_index
+
+    def replace_image_reference(match: re.Match) -> str:
+        nonlocal rendered_count, current_index
+
+        target = match.group("target")
+        alt_text = match.group("alt") or "Diagrama PlantUML"
+        source_path = _extract_markdown_target_path(target)
+        if not source_path:
+            return match.group(0)
+
+        suffix = Path(source_path).suffix.lower()
+        if suffix not in _PLANTUML_FILE_EXTENSIONS:
+            return match.group(0)
+
+        if _is_url_or_data_uri(source_path):
+            # Mantém comportamento atual para links remotos/data URI.
+            return match.group(0)
+
+        source_file = Path(source_path)
+        if not source_file.is_absolute():
+            source_file = (md_base_dir / source_file).resolve()
+
+        if not source_file.exists():
+            raise PlantUMLRenderingError(
+                f"Arquivo PlantUML referenciado nao encontrado: {source_file}"
+            )
+
+        try:
+            source_code = source_file.read_text(encoding="utf-8")
+        except Exception as exc:
+            raise PlantUMLRenderingError(
+                f"Nao foi possivel ler arquivo PlantUML '{source_file}': {str(exc)}"
+            ) from exc
+
+        current_index += 1
+        rendered_count += 1
+        if verbose:
+            print(f"[INFO] Renderizando arquivo PlantUML #{current_index}: {source_file}")
+
+        image_data_uri = _render_plantuml_source_to_data_uri(
+            source_code=source_code,
+            diagram_index=current_index,
+            working_dir=working_dir,
+            plantuml_command=plantuml_command,
+            plantuml_theme=plantuml_theme,
+        )
+        return f"![{alt_text}]({image_data_uri})"
+
+    rendered_markdown = _MARKDOWN_IMAGE_PATTERN.sub(replace_image_reference, md_content)
+    return rendered_markdown, rendered_count
+
+
+def _render_plantuml_blocks_in_markdown(
+    md_content: str,
+    md_base_dir: Path,
+    verbose: bool = False,
+    plantuml_theme: Optional[str] = None,
+) -> Tuple[str, int]:
+    """
+    Renderiza PlantUML no Markdown (blocos fenced e referências a arquivos).
+
+    Suportes:
+    - Blocos ```plantuml```, ```plantxml```, ```puml``` e ```uml```
+    - Referências de imagem para arquivos locais `.plantuml`, `.puml`, `.pu`, `.iuml`
+
+    Args:
+        md_content: Conteúdo markdown original
+        md_base_dir: Diretório do markdown de entrada
+        verbose: Se True, imprime logs de progresso
+        plantuml_theme: Tema opcional a ser aplicado nos diagramas
+
+    Returns:
+        Tuple[str, int]:
+            - Markdown transformado com diagramas em data URI
+            - Quantidade total de diagramas PlantUML renderizados
+
+    Raises:
+        PlantUMLRendererNotAvailableError: Se houver PlantUML sem renderer disponível
+        PlantUMLRenderingError: Se qualquer diagrama falhar na renderização
+    """
+    block_matches = list(_PLANTUML_BLOCK_PATTERN.finditer(md_content))
+    image_matches = list(_MARKDOWN_IMAGE_PATTERN.finditer(md_content))
+
+    has_plantuml_file_reference = False
+    for image_match in image_matches:
+        target_path = _extract_markdown_target_path(image_match.group("target"))
+        if (
+            Path(target_path).suffix.lower() in _PLANTUML_FILE_EXTENSIONS
+            and not _is_url_or_data_uri(target_path)
+        ):
+            has_plantuml_file_reference = True
+            break
+
+    if not block_matches and not has_plantuml_file_reference:
+        return md_content, 0
+
+    plantuml_command = _resolve_plantuml_renderer_command()
+    if verbose:
+        print(f"[INFO] Renderer PlantUML detectado: {' '.join(plantuml_command)}")
+        print(f"[INFO] Blocos PlantUML encontrados: {len(block_matches)}")
+        if has_plantuml_file_reference:
+            print("[INFO] Referencias para arquivos .plantuml detectadas no Markdown.")
+
+    rendered_blocks = 0
+    transformed_content = md_content
+
+    with tempfile.TemporaryDirectory(prefix="pdf_cli_plantuml_") as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+
+        if block_matches:
+            transformed_parts: List[str] = []
+            last_end = 0
+            for index, match in enumerate(block_matches, start=1):
+                transformed_parts.append(md_content[last_end:match.start()])
+                plantuml_code = match.group("code").strip()
+
+                if verbose:
+                    print(f"[INFO] Renderizando diagrama PlantUML #{index}...")
+
+                image_data_uri = _render_plantuml_source_to_data_uri(
+                    source_code=plantuml_code,
+                    diagram_index=index,
+                    working_dir=temp_dir,
+                    plantuml_command=plantuml_command,
+                    plantuml_theme=plantuml_theme,
+                )
+                transformed_parts.append(f"\n![Diagrama PlantUML {index}]({image_data_uri})\n")
+                last_end = match.end()
+
+            transformed_parts.append(md_content[last_end:])
+            transformed_content = "".join(transformed_parts)
+            rendered_blocks = len(block_matches)
+
+        transformed_content, rendered_file_refs = _render_plantuml_file_references(
+            md_content=transformed_content,
+            md_base_dir=md_base_dir,
+            working_dir=temp_dir,
+            plantuml_command=plantuml_command,
+            plantuml_theme=plantuml_theme,
+            verbose=verbose,
+            initial_index=rendered_blocks,
+        )
+
+    return transformed_content, rendered_blocks + rendered_file_refs
 
 
 def _get_default_css() -> str:
@@ -542,6 +918,8 @@ def convert_md_to_pdf(
     pdf_path: str,
     css_path: Optional[str] = None,
     verbose: bool = False,
+    plantuml_theme: Optional[str] = None,
+    enable_plantuml: bool = True,
     mermaid_theme: str = "default",
     enable_mermaid: bool = True,
 ) -> dict:
@@ -553,6 +931,8 @@ def convert_md_to_pdf(
         pdf_path: Caminho do arquivo PDF de saída (.pdf)
         css_path: Caminho opcional para arquivo CSS customizado
         verbose: Se True, exibe informações detalhadas
+        plantuml_theme: Tema opcional para diagramas PlantUML
+        enable_plantuml: Se True, renderiza blocos PlantUML e arquivos .plantuml
         mermaid_theme: Tema Mermaid para blocos ```mermaid``` (default, dark, forest, neutral)
         enable_mermaid: Se True, renderiza blocos Mermaid como imagens
 
@@ -562,6 +942,7 @@ def convert_md_to_pdf(
             - input_file: Caminho do arquivo de entrada
             - output_file: Caminho do arquivo de saída
             - pages: Número de páginas geradas (se sucesso)
+            - plantuml_diagrams: Quantidade de diagramas PlantUML renderizados
             - mermaid_diagrams: Quantidade de diagramas Mermaid renderizados
             - error: Mensagem de erro (se falhou)
 
@@ -593,6 +974,20 @@ def convert_md_to_pdf(
             print(f"[INFO] Lendo arquivo markdown: {md_path}")
 
         md_content = md_file.read_text(encoding='utf-8')
+
+        # Pré-processar PlantUML antes da conversão Markdown -> HTML
+        plantuml_diagrams = 0
+        if enable_plantuml:
+            md_content, plantuml_diagrams = _render_plantuml_blocks_in_markdown(
+                md_content=md_content,
+                md_base_dir=md_file.parent,
+                verbose=verbose,
+                plantuml_theme=plantuml_theme,
+            )
+            if verbose and plantuml_diagrams > 0:
+                print(f"[INFO] Diagramas PlantUML renderizados: {plantuml_diagrams}")
+        elif verbose:
+            print("[INFO] Renderizacao PlantUML desabilitada via parametro.")
 
         # Pré-processar Mermaid antes da conversão Markdown -> HTML
         mermaid_diagrams = 0
@@ -753,6 +1148,7 @@ def convert_md_to_pdf(
             'input_file': str(md_path),
             'output_file': str(pdf_path),
             'pages': num_pages,
+            'plantuml_diagrams': plantuml_diagrams,
             'mermaid_diagrams': mermaid_diagrams,
         }
 
@@ -765,16 +1161,20 @@ def convert_md_to_pdf(
             parameters={
                 'css_path': css_path,
                 'verbose': verbose,
+                'plantuml_theme': plantuml_theme,
+                'enable_plantuml': enable_plantuml,
                 'mermaid_theme': mermaid_theme,
                 'enable_mermaid': enable_mermaid,
             },
             result={
                 'pages': num_pages,
+                'plantuml_diagrams': plantuml_diagrams,
                 'mermaid_diagrams': mermaid_diagrams,
             },
             notes=(
                 "Conversao de Markdown para PDF concluida com sucesso. "
                 f"Paginas: {num_pages or 'N/A'}. "
+                f"Diagramas PlantUML: {plantuml_diagrams}. "
                 f"Diagramas Mermaid: {mermaid_diagrams}."
             )
         )
@@ -803,6 +1203,8 @@ def convert_md_to_pdf(
             parameters={
                 'css_path': css_path,
                 'verbose': verbose,
+                'plantuml_theme': plantuml_theme,
+                'enable_plantuml': enable_plantuml,
                 'mermaid_theme': mermaid_theme,
                 'enable_mermaid': enable_mermaid,
             },

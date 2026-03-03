@@ -876,8 +876,14 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
         # Processar opções
         css_path = get_flag_value(args, 'css')
         verbose = has_flag(args, 'verbose', 'l')
+        plantuml_theme = get_flag_value(args, 'plantuml-theme')
+        disable_plantuml = has_flag(args, 'disable-plantuml')
         mermaid_theme = get_flag_value(args, 'mermaid-theme', default='default')
         disable_mermaid = has_flag(args, 'disable-mermaid')
+
+        if plantuml_theme is not None and (not isinstance(plantuml_theme, str) or not plantuml_theme.strip()):
+            print_error("Valor invalido para --plantuml-theme. Informe um tema valido.")
+            return 1
 
         if not isinstance(mermaid_theme, str) or not mermaid_theme.strip():
             print_error("Valor invalido para --mermaid-theme. Informe um tema valido.")
@@ -895,6 +901,8 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
             pdf_path=pdf_path,
             css_path=css_path,
             verbose=verbose,
+            plantuml_theme=plantuml_theme.strip() if isinstance(plantuml_theme, str) else None,
+            enable_plantuml=not disable_plantuml,
             mermaid_theme=mermaid_theme.strip(),
             enable_mermaid=not disable_mermaid,
         )
@@ -905,6 +913,8 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
             print(f"  Saida: {pdf_path}")
             if result.get('pages'):
                 print(f"  Paginas geradas: {result['pages']}")
+            if result.get('plantuml_diagrams') is not None:
+                print(f"  Diagramas PlantUML renderizados: {result['plantuml_diagrams']}")
             if result.get('mermaid_diagrams') is not None:
                 print(f"  Diagramas Mermaid renderizados: {result['mermaid_diagrams']}")
             return 0

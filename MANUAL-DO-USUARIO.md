@@ -635,6 +635,7 @@ pdf-cli edit-metadata artigo.pdf artigo_organizado.pdf \
 
 Converte arquivos Markdown (`.md`) para PDF, mantendo formatação visual fiel.
 Tambem renderiza blocos Mermaid (`mermaid`) como imagens PNG no PDF.
+Tambem renderiza blocos PlantUML (`plantuml`/`plantxml`) e arquivos `.plantuml` locais.
 
 **Uso Básico:**
 ```bash
@@ -683,11 +684,29 @@ pdf-cli md-to-pdf README.md README.pdf --verbose
 
 **Informações Exibidas:**
 - Arquivo Markdown sendo lido
+- Detecção e renderização de diagramas PlantUML (quando houver)
 - Detecção e renderização de diagramas Mermaid (quando houver)
 - Conversão Markdown → HTML
 - Conversão HTML → PDF
 - Biblioteca usada (WeasyPrint ou xhtml2pdf)
 - Número de páginas geradas
+
+#### Opções PlantUML
+
+```bash
+# Definir tema dos diagramas PlantUML
+pdf-cli md-to-pdf arquitetura.md arquitetura.pdf --plantuml-theme plain
+
+# Desabilitar renderização PlantUML
+pdf-cli md-to-pdf documento.md documento.pdf --disable-plantuml
+```
+
+**Observações:**
+- `--plantuml-theme` define tema opcional para PlantUML
+- Se houver bloco PlantUML e nenhum renderer instalado, o comando retorna erro claro
+- Renderers detectados automaticamente:
+  - `plantuml` no PATH
+- Opcional: definir comando customizado pela variável `PDF_CLI_PLANTUML_COMMAND`
 
 #### Opções Mermaid
 
