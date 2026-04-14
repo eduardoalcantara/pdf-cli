@@ -409,6 +409,10 @@ def cmd_edit_text(args: Dict[str, Any]) -> int:
         pad = has_flag(args, 'pad')
         x = get_flag_value(args, 'x')
         y = get_flag_value(args, 'y')
+        dx = get_flag_value(args, 'dx')
+        dy = get_flag_value(args, 'dy')
+        shift_inline_right = has_flag(args, 'shift-inline-right')
+        preserve_line_right_edge = has_flag(args, 'preserve-line-right-edge')
         font_name = get_flag_value(args, 'font-name')
         font_size = get_flag_value(args, 'font-size')
         color = get_flag_value(args, 'color')
@@ -430,6 +434,18 @@ def cmd_edit_text(args: Dict[str, Any]) -> int:
                 y = float(y)
             except ValueError:
                 print_error(f"Valor invalido para --y: {y}")
+                return 1
+        if dx is not None:
+            try:
+                dx = float(dx)
+            except ValueError:
+                print_error(f"Valor invalido para --dx: {dx}")
+                return 1
+        if dy is not None:
+            try:
+                dy = float(dy)
+            except ValueError:
+                print_error(f"Valor invalido para --dy: {dy}")
                 return 1
         if font_size is not None:
             try:
@@ -524,6 +540,10 @@ def cmd_edit_text(args: Dict[str, Any]) -> int:
                 pad=pad,
                 x=x,
                 y=y,
+                dx=dx,
+                dy=dy,
+                shift_inline_right=shift_inline_right,
+                preserve_line_right_edge=preserve_line_right_edge,
                 font_name=font_name,
                 font_size=font_size,
                 color=color,
@@ -553,6 +573,10 @@ def cmd_edit_text(args: Dict[str, Any]) -> int:
                 pad=pad,
                 x=x,
                 y=y,
+                dx=dx,
+                dy=dy,
+                shift_inline_right=shift_inline_right,
+                preserve_line_right_edge=preserve_line_right_edge,
                 font_name=font_name,
                 font_size=font_size,
                 color=color,

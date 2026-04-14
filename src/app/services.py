@@ -69,6 +69,222 @@ def _normalize_font_name(font_name: str) -> str:
     return font_name
 
 
+def _hex_to_rgb(color: Optional[str]) -> Tuple[float, float, float]:
+    """Converte cor hex para RGB normalizado usado no PyMuPDF."""
+    if not color:
+        return (0.0, 0.0, 0.0)
+    hex_color = color.lstrip("#")
+    if len(hex_color) == 6:
+        try:
+            return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+        except ValueError:
+            return (0.0, 0.0, 0.0)
+    return (0.0, 0.0, 0.0)
+
+
+def _insert_text_with_font(
+    page: fitz.Page,
+    text: str,
+    x: float,
+    y_top: float,
+    box_height: float,
+    font_size: float,
+    color_rgb: Tuple[float, float, float],
+    rotation: float,
+    font_loaded: Optional[fitz.Font]
+) -> bool:
+    """
+    Insere texto na página tentando preservar fonte carregada.
+
+    Returns:
+        bool: True se precisou fallback para Helvetica.
+    """
+    baseline_y = y_top + (box_height * 0.82)
+    used_fallback = False
+
+    if abs(float(rotation)) > 0.001:
+        fontname_to_use = "helv"
+        try:
+            if font_loaded and hasattr(font_loaded, "name") and font_loaded.name:
+                fontname_to_use = font_loaded.name.replace(' ', '').replace('-', '')
+            page.insert_text(
+                point=(x, baseline_y),
+                text=text,
+                fontsize=font_size,
+                fontname=fontname_to_use,
+                color=color_rgb,
+                rotate=rotation
+            )
+        except Exception:
+            page.insert_text(
+                point=(x, baseline_y),
+                text=text,
+                fontsize=font_size,
+                fontname="helv",
+                color=color_rgb,
+                rotate=rotation
+            )
+            used_fallback = True
+    else:
+        try:
+            tw = fitz.TextWriter(page.rect)
+            if font_loaded:
+                tw.append(
+                    pos=(x, baseline_y),
+                    text=text,
+                    font=font_loaded,
+                    fontsize=font_size
+                )
+            else:
+                fallback_font = fitz.Font("helv")
+                tw.append(
+                    pos=(x, baseline_y),
+                    text=text,
+                    font=fallback_font,
+                    fontsize=font_size
+                )
+                used_fallback = True
+            tw.write_text(page, color=color_rgb)
+        except Exception:
+            page.insert_text(
+                point=(x, baseline_y),
+                text=text,
+                fontsize=font_size,
+                fontname="helv",
+                color=color_rgb,
+                rotate=0
+            )
+            used_fallback = True
+
+    return used_fallback
+
+
+def _find_inline_right_objects(
+    text_objects: List[TextObject],
+    target_obj: TextObject
+) -> List[TextObject]:
+    """
+    Encontra objetos na mesma linha e à direita do alvo.
+    """
+    line_tolerance = max(1.0, target_obj.height * 0.25)
+    target_right_edge = target_obj.x + target_obj.width - 0.5
+    candidates: List[TextObject] = []
+    for obj in text_objects:
+        if obj.id == target_obj.id:
+            continue
+        if obj.page != target_obj.page:
+            continue
+        if abs(obj.y - target_obj.y) > line_tolerance:
+            continue
+        if obj.x < target_right_edge:
+            continue
+        candidates.append(obj)
+    candidates.sort(key=lambda item: item.x)
+    return candidates
+
+
+def _find_text_object_match(
+    text_objects: List[TextObject],
+    page: int,
+    content: str,
+    x: float,
+    y: float
+) -> Optional[TextObject]:
+    """
+    Encontra o objeto mais provável por página, conteúdo e proximidade geométrica.
+    """
+    best_obj = None
+    best_score = float("inf")
+    for obj in text_objects:
+        if obj.page != page:
+            continue
+        if obj.content != content:
+            continue
+        score = abs(obj.x - x) + abs(obj.y - y)
+        if score < best_score:
+            best_score = score
+            best_obj = obj
+    return best_obj
+
+
+def _measure_text_width(
+    text: str,
+    font_size: float,
+    font_loaded: Optional[fitz.Font],
+    font_name_hint: Optional[str]
+) -> float:
+    """Mede largura do texto em pontos."""
+    if not text:
+        return 0.0
+    try:
+        if font_loaded and hasattr(font_loaded, "text_length"):
+            return float(font_loaded.text_length(text, fontsize=font_size))
+    except Exception:
+        pass
+
+    try:
+        if font_name_hint:
+            candidate = font_name_hint.replace(" ", "").replace("-", "")
+            return float(fitz.get_text_length(text, fontname=candidate, fontsize=font_size))
+    except Exception:
+        pass
+
+    try:
+        return float(fitz.get_text_length(text, fontname="helv", fontsize=font_size))
+    except Exception:
+        return 0.0
+
+
+def _expand_spaces_to_target_width(
+    text: str,
+    target_width: float,
+    font_size: float,
+    font_loaded: Optional[fitz.Font],
+    font_name_hint: Optional[str]
+) -> str:
+    """
+    Expande espaços entre palavras para aproximar largura alvo.
+
+    Usado para manter borda direita da linha quando o texto novo encurta
+    em relação ao bloco original.
+    """
+    if not text or " " not in text or target_width <= 0:
+        return text
+
+    current_width = _measure_text_width(text, font_size, font_loaded, font_name_hint)
+    if current_width >= target_width - 0.5:
+        return text
+
+    words = text.split(" ")
+    gap_count = len(words) - 1
+    if gap_count <= 0:
+        return text
+
+    space_width = _measure_text_width(" ", font_size, font_loaded, font_name_hint)
+    if space_width <= 0:
+        return text
+
+    missing_width = target_width - current_width
+    extra_spaces = int(round(missing_width / space_width))
+    if extra_spaces <= 0:
+        return text
+
+    # Evitar expansão extrema inesperada em linhas curtas.
+    extra_spaces = min(extra_spaces, 80)
+
+    gap_spaces = [1] * gap_count
+    for idx in range(extra_spaces):
+        gap_spaces[idx % gap_count] += 1
+
+    parts = []
+    for idx, word in enumerate(words[:-1]):
+        parts.append(word)
+        parts.append(" " * gap_spaces[idx])
+    parts.append(words[-1])
+
+    return "".join(parts)
+
+
 def export_objects(
     pdf_path: str,
     output_path: str,
@@ -996,12 +1212,16 @@ def edit_text(
     pad: bool = False,
     x: Optional[float] = None,
     y: Optional[float] = None,
+    dx: Optional[float] = None,
+    dy: Optional[float] = None,
     font_name: Optional[str] = None,
     font_size: Optional[int] = None,
     color: Optional[str] = None,
     rotation: Optional[float] = None,
     create_backup: bool = True,
     all_occurrences: bool = False,
+    shift_inline_right: bool = False,
+    preserve_line_right_edge: bool = False,
     prefer_engine: str = "pymupdf",
     feedback_callback: Optional[Callable] = None,
     strict_fonts: bool = False
@@ -1023,12 +1243,16 @@ def edit_text(
         pad: Se True, aplica padding para manter largura visual.
         x: Nova posição X.
         y: Nova posição Y.
+        dx: Deslocamento relativo no eixo X.
+        dy: Deslocamento relativo no eixo Y.
         font_name: Nova fonte.
         font_size: Novo tamanho da fonte.
         color: Nova cor (formato hex).
         rotation: Nova rotação em graus.
         create_backup: Se True, cria backup antes de modificar.
         all_occurrences: Se True, substitui todas as ocorrências encontradas (apenas com content/search_content).
+        shift_inline_right: Se True, desloca objetos à direita na mesma linha conforme delta de largura.
+        preserve_line_right_edge: Se True, distribui espaços no texto editado para tentar preservar borda direita.
 
     Returns:
         str: Caminho do PDF modificado.
@@ -1048,6 +1272,16 @@ def edit_text(
 
     # Se all_occurrences está ativo e search_term foi fornecido, processar todas as ocorrências
     if all_occurrences and search_term and not object_id:
+        if shift_inline_right:
+            raise PDFCliException(
+                "A opcao --shift-inline-right ainda nao e suportada com --all-occurrences. "
+                "Use sem --all-occurrences ou processe em etapas."
+            )
+        if preserve_line_right_edge:
+            raise PDFCliException(
+                "A opcao --preserve-line-right-edge ainda nao e suportada com --all-occurrences. "
+                "Use sem --all-occurrences ou processe em etapas."
+            )
         result_path, occurrences_details_dict = _edit_text_all_occurrences(
             pdf_path=pdf_path,
             output_path=output_path,
@@ -1073,6 +1307,10 @@ def edit_text(
         return result_path, details
 
     with PDFRepository(pdf_path) as repo:
+        if shift_inline_right and preserve_line_right_edge:
+            raise PDFCliException(
+                "Use apenas uma estrategia por vez: --shift-inline-right OU --preserve-line-right-edge."
+            )
         # Extrair textos
         text_objects = repo.extract_text_objects()
 
@@ -1127,10 +1365,6 @@ def edit_text(
 
         if align:
             target_obj.align = align
-        if x is not None:
-            target_obj.x = x
-        if y is not None:
-            target_obj.y = y
         if font_name:
             target_obj.font_name = font_name
         if font_size is not None:
@@ -1153,9 +1387,23 @@ def edit_text(
         if 'final_content' not in locals():
             final_content = new_content
 
-        # Determinar posição (usar coordenadas do objeto ou novas coordenadas)
-        final_x = target_obj.x if x is None else x
-        final_y = target_obj.y if y is None else y
+        # Guardar geometria original para redaction no local correto.
+        original_x = target_obj.x
+        original_y = target_obj.y
+        original_width = target_obj.width
+        original_height = target_obj.height
+
+        # Determinar posição final (absoluta + deslocamento relativo).
+        final_x = original_x if x is None else x
+        final_y = original_y if y is None else y
+        if dx is not None:
+            final_x += dx
+        if dy is not None:
+            final_y += dy
+
+        # Atualizar posição final no objeto para refletir estado "after".
+        target_obj.x = final_x
+        target_obj.y = final_y
 
         # Converter cor hex para RGB (formato PyMuPDF)
         color_rgb = (0, 0, 0)  # Preto padrão
@@ -1167,77 +1415,120 @@ def edit_text(
         # Determinar fonte e tamanho
         final_font = target_obj.font_name if not font_name else font_name
         final_font_size = target_obj.font_size if font_size is None else font_size
+        final_rotation = target_obj.rotation if rotation is None else rotation
+
+        # Resolver fonte com normalização robusta (hífen/espaço/underscore/subset prefix)
+        # para reduzir fallback indevido para Helvetica.
+        fonts_dict = repo.extract_fonts()
+        font_loaded = None
+        font_source = "none"
+        if final_font:
+            font_loaded, font_source = repo.get_font_for_text_object(final_font, fonts_dict)
+
+        if preserve_line_right_edge:
+            final_content = _expand_spaces_to_target_width(
+                text=final_content,
+                target_width=original_width,
+                font_size=final_font_size,
+                font_loaded=font_loaded,
+                font_name_hint=final_font
+            )
+
+        inline_right_candidates: List[TextObject] = []
+        if shift_inline_right:
+            line_tolerance = max(1.0, original_height * 0.25)
+            original_right_edge = original_x + original_width - 0.5
+            inline_right_candidates = [
+                obj for obj in text_objects
+                if obj.id != target_obj.id
+                and obj.page == target_obj.page
+                and abs(obj.y - original_y) <= line_tolerance
+                and obj.x >= original_right_edge
+            ]
+            inline_right_candidates.sort(key=lambda item: item.x)
 
         # Buscar e remover texto antigo usando redaction
-        bbox = fitz.Rect(target_obj.x, target_obj.y, target_obj.x + target_obj.width, target_obj.y + target_obj.height)
+        bbox = fitz.Rect(original_x, original_y, original_x + original_width, original_y + original_height)
         page.add_redact_annot(bbox, fill=(1, 1, 1))  # Preencher com branco
         page.apply_redactions()
 
         # Inserir novo texto
-        # Determinar alinhamento
-        align_val = 0  # left
-        if align:
-            if align == "center":
-                align_val = 1
-            elif align == "right":
-                align_val = 2
-            elif align == "justify":
-                align_val = 3
-
-        # Inserir texto com formatação
-        text_rect = fitz.Rect(final_x, final_y, final_x + target_obj.width, final_y + target_obj.height)
-
-        # Tentar carregar fonte original, com fallback para fontes padrão similares
-        # PyMuPDF não consegue carregar todas as fontes do sistema, então tentamos fontes padrão similares
-        font_loaded = None
-
-        # Mapear fontes comuns para fontes padrão do PyMuPDF
-        font_mapping = {
-            "ArialMT": "helv",
-            "Arial": "helv",
-            "ArialNarrow": "helv",
-            "ArialNarrow-Bold": "hebo",  # Helvetica-Bold
-            "Times": "tiro",
-            "Times-Roman": "tiro",
-            "Courier": "cour",
-        }
-
-        # Tentar usar mapeamento primeiro
-        mapped_font = font_mapping.get(final_font) if final_font else None
-        if mapped_font:
-            try:
-                font_loaded = fitz.Font(mapped_font)
-            except:
-                pass
-
-        # Se não funcionou, tentar fonte original
-        if font_loaded is None and final_font:
-            try:
-                font_loaded = fitz.Font(final_font)
-            except:
-                pass
-
-        # Fallback final para helv (Helvetica)
-        if font_loaded is None:
-            font_loaded = fitz.Font("helv")
-
-        # Para fontes em negrito, tentar usar versão bold se disponível
-        fontname_to_use = font_loaded.name
-        if final_font and "bold" in final_font.lower() and "hebo" not in fontname_to_use.lower():
-            try:
-                bold_font = fitz.Font("hebo")  # Helvetica-Bold
-                fontname_to_use = bold_font.name
-            except:
-                pass  # Usar fonte normal se bold não disponível
-
-        page.insert_text(
-            point=(final_x, final_y + final_font_size),  # Ajustar Y para baseline
+        inserted_with_fallback = _insert_text_with_font(
+            page=page,
             text=final_content,
-            fontsize=final_font_size,
-            fontname=fontname_to_use,
-            color=color_rgb,
-            rotate=target_obj.rotation if rotation is None else rotation
+            x=final_x,
+            y_top=final_y,
+            box_height=target_obj.height,
+            font_size=final_font_size,
+            color_rgb=color_rgb,
+            rotation=final_rotation,
+            font_loaded=font_loaded
         )
+
+        moved_inline_objects = 0
+        inline_delta_x = 0.0
+        if shift_inline_right and inline_right_candidates:
+            original_right_edge = original_x + original_width
+            # Calcular delta horizontal esperado:
+            # 1) deslocamento explícito do objeto editado (x/dx)
+            # 2) diferença de largura entre texto novo e original
+            estimated_new_width = original_width
+            try:
+                if font_loaded and hasattr(font_loaded, "text_length"):
+                    estimated_new_width = float(font_loaded.text_length(final_content, fontsize=final_font_size))
+                elif final_font:
+                    font_name_for_measure = final_font.replace(' ', '').replace('-', '')
+                    estimated_new_width = float(
+                        fitz.get_text_length(final_content, fontname=font_name_for_measure, fontsize=final_font_size)
+                    )
+            except Exception:
+                estimated_new_width = original_width
+
+            new_right_edge = final_x + estimated_new_width
+            try:
+                matches = page.search_for(final_content)
+                if matches:
+                    best_rect = min(
+                        matches,
+                        key=lambda rect: abs(rect.x0 - final_x) + abs(rect.y0 - final_y)
+                    )
+                    new_right_edge = best_rect.x1
+            except Exception:
+                # Se não conseguir medir via busca, usar estimativa calculada.
+                pass
+
+            inline_delta_x = new_right_edge - original_right_edge
+
+            if abs(inline_delta_x) > 0.01:
+                # Apagar objetos à direita nas posições antigas.
+                for inline_obj in inline_right_candidates:
+                    old_rect = fitz.Rect(
+                        inline_obj.x,
+                        inline_obj.y,
+                        inline_obj.x + inline_obj.width,
+                        inline_obj.y + inline_obj.height
+                    )
+                    page.add_redact_annot(old_rect, fill=(1, 1, 1))
+                page.apply_redactions()
+
+                # Reinserir objetos deslocados.
+                for inline_obj in inline_right_candidates:
+                    inline_font_loaded = None
+                    if inline_obj.font_name:
+                        inline_font_loaded, _ = repo.get_font_for_text_object(inline_obj.font_name, fonts_dict)
+                    inline_color_rgb = _hex_to_rgb(inline_obj.color)
+                    _insert_text_with_font(
+                        page=page,
+                        text=inline_obj.content,
+                        x=inline_obj.x + inline_delta_x,
+                        y_top=inline_obj.y,
+                        box_height=inline_obj.height,
+                        font_size=inline_obj.font_size,
+                        color_rgb=inline_color_rgb,
+                        rotation=inline_obj.rotation or 0.0,
+                        font_loaded=inline_font_loaded
+                    )
+                    moved_inline_objects += 1
 
         # Salvar PDF modificado
         doc.save(output_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
@@ -1260,7 +1551,13 @@ def edit_text(
             result={
                 "before": before_state,
                 "after": after_state,
-                "backup": backup_path
+                "backup": backup_path,
+                "font_source": font_source,
+                "font_fallback": inserted_with_fallback,
+                "shift_inline_right": shift_inline_right,
+                "preserve_line_right_edge": preserve_line_right_edge,
+                "inline_shift_delta_x": round(inline_delta_x, 3),
+                "inline_objects_moved": moved_inline_objects
             },
             notes="Modificação de texto realizada."
         )

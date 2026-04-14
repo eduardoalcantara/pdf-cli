@@ -432,6 +432,86 @@ class PDFRepository:
 
         return font_paths
 
+    def _normalize_font_name_for_match(self, font_name: str) -> str:
+        """
+        Normaliza nome de fonte para comparação robusta.
+
+        Regras:
+        - Remove prefixo de subset (ex: "ABCDEF+")
+        - Converte para minúsculo
+        - Remove separadores comuns (espaço, hífen, underscore)
+        - Mantém apenas caracteres alfanuméricos
+        """
+        if not font_name:
+            return ""
+
+        normalized = font_name
+        if '+' in normalized:
+            parts = normalized.split('+', 1)
+            if len(parts) > 1:
+                normalized = parts[1]
+
+        normalized = normalized.lower().strip()
+        normalized = normalized.replace(' ', '').replace('-', '').replace('_', '')
+        normalized = ''.join(ch for ch in normalized if ch.isalnum())
+        return normalized
+
+    def _font_names_match(self, a: str, b: str) -> bool:
+        """
+        Verifica correspondência entre nomes de fonte com normalização.
+        """
+        if not a or not b:
+            return False
+
+        na = self._normalize_font_name_for_match(a)
+        nb = self._normalize_font_name_for_match(b)
+
+        if not na or not nb:
+            return False
+
+        if na == nb:
+            return True
+
+        # Tolerar sufixo "regular" em apenas um dos lados
+        na_no_regular = na[:-7] if na.endswith("regular") else na
+        nb_no_regular = nb[:-7] if nb.endswith("regular") else nb
+        if na_no_regular == nb_no_regular:
+            return True
+
+        return na in nb or nb in na
+
+    def _build_font_name_candidates(self, font_name: str) -> List[str]:
+        """
+        Gera variações de nome para resolver fontes do sistema.
+        """
+        if not font_name:
+            return []
+
+        candidates = []
+
+        def add_candidate(value: str) -> None:
+            value = (value or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+
+        base_name = font_name
+        if '+' in base_name:
+            parts = base_name.split('+', 1)
+            if len(parts) > 1:
+                base_name = parts[1]
+
+        add_candidate(font_name)
+        add_candidate(base_name)
+        add_candidate(base_name.replace('-', ' '))
+        add_candidate(base_name.replace('_', ' '))
+        add_candidate(base_name.replace(' ', '-'))
+        add_candidate(base_name.replace('_', '-'))
+        add_candidate(base_name.replace('-', '_'))
+        add_candidate(base_name.replace(' ', ''))
+        add_candidate(base_name.replace('-', '').replace('_', ''))
+
+        return candidates
+
     def get_font_for_text_object(self, font_name: str, fonts_dict: Dict[str, ExtractedFont]) -> Tuple[Optional[fitz.Font], str]:
         """
         Tenta obter uma fonte PyMuPDF para um objeto de texto, usando fontes extraídas.
@@ -450,6 +530,17 @@ class PDFRepository:
             Tuple[Optional[fitz.Font], str]: (Fonte carregada ou None, fonte source: "extracted"/"system"/"fallback")
         """
         extracted_font = fonts_dict.get(font_name)
+        if not extracted_font and font_name:
+            for key, value in fonts_dict.items():
+                if self._font_names_match(font_name, key):
+                    extracted_font = value
+                    break
+                if value and (
+                    self._font_names_match(font_name, value.name) or
+                    self._font_names_match(font_name, value.base_font or "")
+                ):
+                    extracted_font = value
+                    break
 
         # Estratégia 1: Usar fonte embeddada do PDF se disponível
         if extracted_font and extracted_font.font_file_path:
@@ -465,7 +556,12 @@ class PDFRepository:
         if font_name:
             # PyMuPDF não acessa diretamente fontes do sistema via nome
             # Precisamos buscar arquivos de fonte no sistema
-            font_paths = self._find_system_font(font_name)
+            font_paths = []
+            for candidate in self._build_font_name_candidates(font_name):
+                for candidate_path in self._find_system_font(candidate):
+                    if candidate_path not in font_paths:
+                        font_paths.append(candidate_path)
+
             for font_path in font_paths:
                 try:
                     # Tentar carregar fonte do arquivo
@@ -481,11 +577,12 @@ class PDFRepository:
 
             # Se não encontrou arquivo, tentar diretamente com nome (pode funcionar em alguns casos)
             # Mas isso geralmente não funciona para fontes customizadas
-            try:
-                font = fitz.Font(fontname=font_name)
-                return font, "system"
-            except Exception:
-                pass
+            for candidate in self._build_font_name_candidates(font_name):
+                try:
+                    font = fitz.Font(fontname=candidate)
+                    return font, "system"
+                except Exception:
+                    continue
 
         # Estratégia 3: Mapeamento inteligente baseado no nome da fonte
         font_mapping = {

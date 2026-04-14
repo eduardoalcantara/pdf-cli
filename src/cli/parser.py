@@ -12,6 +12,36 @@ sem dependências externas. Suporta:
 from typing import Dict, List, Any, Optional
 
 
+def _is_numeric_token(value: str) -> bool:
+    """
+    Verifica se token representa número (incluindo negativo).
+    """
+    if value is None:
+        return False
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_flag_value_token(value: str) -> bool:
+    """
+    Decide se token pode ser tratado como valor de flag.
+
+    Aceita:
+    - Tokens que não iniciam com '-'
+    - Números negativos (ex: -12, -36.857)
+    """
+    if value is None:
+        return False
+    if value in ['True', 'False']:
+        return False
+    if not value.startswith('-'):
+        return True
+    return _is_numeric_token(value)
+
+
 def parse_args(argv: List[str]) -> Dict[str, Any]:
     """
     Parse manual dos argumentos usando apenas sys.argv.
@@ -38,14 +68,8 @@ def parse_args(argv: List[str]) -> Dict[str, Any]:
     }
 
     i = 1  # Pular argv[0] que é o nome do script
-    skip_next = False
 
     while i < len(argv):
-        if skip_next:
-            skip_next = False
-            i += 1
-            continue
-
         arg = argv[i]
 
         # Versão global (apenas se não tiver comando ainda)
@@ -65,7 +89,7 @@ def parse_args(argv: List[str]) -> Dict[str, Any]:
                 if args['command'] is None:
                     # Formato: --help comando
                     args['help_command'] = argv[i + 1]
-                    skip_next = True
+                    i += 1
                 else:
                     # Formato: comando --help (já temos comando)
                     pass
@@ -81,10 +105,9 @@ def parse_args(argv: List[str]) -> Dict[str, Any]:
         # Flags/opções (começam com -- ou -)
         if arg.startswith('--'):
             flag_name = arg[2:]
-            # Verificar se flag aceita valor (próximo arg não começa com -)
-            if i + 1 < len(argv) and not argv[i + 1].startswith('-') and argv[i + 1] not in ['True', 'False']:
+            # Verificar se flag aceita valor.
+            if i + 1 < len(argv) and _is_flag_value_token(argv[i + 1]):
                 args['flags'][flag_name] = argv[i + 1]
-                skip_next = True
                 i += 1
             else:
                 args['flags'][flag_name] = True
@@ -105,10 +128,9 @@ def parse_args(argv: List[str]) -> Dict[str, Any]:
                 elif flag_char == 'q':
                     # -q = --force (quiet)
                     args['flags']['force'] = True
-                elif flag_char in ['t', 'o', 'f', 'r', 'p'] and i + 1 < len(argv) and not argv[i + 1].startswith('-'):
+                elif flag_char in ['t', 'o', 'f', 'r', 'p'] and i + 1 < len(argv) and _is_flag_value_token(argv[i + 1]):
                     # Flag que aceita valor
                     args['flags'][flag_char] = argv[i + 1]
-                    skip_next = True
                     i += 1
                 else:
                     args['flags'][flag_char] = True
