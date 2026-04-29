@@ -28,9 +28,104 @@ from pathlib import Path
 from typing import Optional
 import markdown2
 import platform
+import sys
 from app.logging import get_logger
 
-# Tentar importar WeasyPrint (preferido, mas pode falhar no Windows sem dependências)
+
+# Monkey-patch ANTES de importar WeasyPrint
+# Isso captura a mensagem durante a importação das bibliotecas C
+class SilentStderr:
+    """Stderr que filtra mensagens do WeasyPrint sobre bibliotecas externas."""
+    def __init__(self, original):
+        self.original = original
+        self.buffer = ""
+        self.suppressing = False
+        self.separator_count = 0
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+
+        # Acumular no buffer para processar linha por linha
+        self.buffer += text
+
+        # Processar linhas completas
+        while '\n' in self.buffer:
+            line, self.buffer = self.buffer.split('\n', 1)
+            self._process_line(line + '\n')
+
+        # Se buffer ficou muito grande sem quebra de linha, processar mesmo assim
+        if len(self.buffer) > 1000:
+            self._process_line(self.buffer)
+            self.buffer = ""
+
+    def _process_line(self, line: str) -> None:
+        """Processa uma linha completa."""
+        line_stripped = line.strip()
+        line_lower = line.lower()
+
+        # Detectar início do aviso - pode começar com separador ou diretamente com a mensagem
+        if line_stripped == "-----":
+            # Primeiro separador - pode ser início do aviso
+            if not self.suppressing:
+                self.suppressing = True
+                self.separator_count = 1
+            else:
+                # Segundo separador - fim do bloco
+                self.separator_count += 1
+                if self.separator_count >= 2:
+                    self.suppressing = False
+                    self.separator_count = 0
+            return  # Suprimir separadores
+
+        # Detectar início do aviso pela mensagem
+        if "weasyprint could not import" in line_lower:
+            self.suppressing = True
+            self.separator_count = 0
+            return  # Suprimir
+
+        # Se estamos suprimindo
+        if self.suppressing:
+            # Verificar se é linha vazia ou parte do aviso
+            if (not line_stripped or
+                "doc.courtbouillon.org" in line_lower or
+                "installation steps" in line_lower or
+                "troubleshooting" in line_lower or
+                "first_steps.html" in line_lower or
+                "please carefully follow" in line_lower):
+                return  # Suprimir
+
+            # Se encontrou nova mensagem (começa com "["), parar de suprimir
+            if line_stripped.startswith("[") and not any(
+                kw in line_lower for kw in ["http", "courtbouillon", "weasyprint"]
+            ):
+                self.suppressing = False
+                self.separator_count = 0
+                self.original.write(line)
+                return
+
+            return  # Continuar suprimindo
+
+        # Não está suprimindo, escrever normalmente
+        self.original.write(line)
+
+    def flush(self) -> None:
+        self.original.flush()
+        # Resetar ao fazer flush
+        self.buffer = ""
+        self.suppressing = False
+        self.separator_count = 0
+
+    def __getattr__(self, name):
+        return getattr(self.original, name)
+
+
+# Aplicar o patch ANTES de importar WeasyPrint
+_original_stderr = sys.stderr
+sys.stderr = SilentStderr(sys.stderr)
+
+# Tentar importar WeasyPrint (preferido, melhor qualidade e suporte a Unicode)
+# Tem fallback automático para xhtml2pdf se não estiver disponível
 WEASYPRINT_AVAILABLE = False
 WEASYPRINT_ERROR = None
 try:
@@ -38,6 +133,9 @@ try:
     WEASYPRINT_AVAILABLE = True
 except (ImportError, OSError) as e:
     WEASYPRINT_ERROR = str(e)
+finally:
+    # Restaurar stderr original após importação
+    sys.stderr = _original_stderr
 
 # Fallback: xhtml2pdf (mais portável, funciona no Windows e Linux)
 XHTML2PDF_AVAILABLE = False
@@ -460,7 +558,8 @@ def convert_md_to_pdf(
         # Detectar plataforma para mensagens informativas
         is_windows = platform.system() == 'Windows'
 
-        # Tentar usar WeasyPrint primeiro (melhor qualidade, funciona bem no Linux)
+        # Tentar usar WeasyPrint primeiro (melhor qualidade, suporte a Unicode/emojis)
+        # Tem fallback automático para xhtml2pdf se falhar
         if WEASYPRINT_AVAILABLE:
             try:
                 # Carregar CSS (customizado ou padrão)
@@ -480,8 +579,14 @@ def convert_md_to_pdf(
 
                     css_obj = CSS(string=_get_default_css())
 
-                html_doc = HTML(string=full_html, base_url=base_url)
-                html_doc.write_pdf(pdf_path, stylesheets=[css_obj])
+                # Gerar PDF (aplicar filtro também durante uso, não apenas importação)
+                _original_stderr_use = sys.stderr
+                sys.stderr = SilentStderr(sys.stderr)
+                try:
+                    html_doc = HTML(string=full_html, base_url=base_url)
+                    html_doc.write_pdf(pdf_path, stylesheets=[css_obj])
+                finally:
+                    sys.stderr = _original_stderr_use
 
                 if verbose:
                     print("[INFO] PDF gerado usando WeasyPrint")
