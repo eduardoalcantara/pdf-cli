@@ -634,6 +634,8 @@ pdf-cli edit-metadata artigo.pdf artigo_organizado.pdf \
 ### md-to-pdf
 
 Converte arquivos Markdown (`.md`) para PDF, mantendo formatação visual fiel.
+Tambem renderiza blocos Mermaid (`mermaid`) como imagens PNG no PDF.
+Tambem renderiza blocos PlantUML (`plantuml`/`plantxml`) e arquivos `.plantuml` locais.
 
 **Uso Básico:**
 ```bash
@@ -682,10 +684,47 @@ pdf-cli md-to-pdf README.md README.pdf --verbose
 
 **Informações Exibidas:**
 - Arquivo Markdown sendo lido
+- Detecção e renderização de diagramas PlantUML (quando houver)
+- Detecção e renderização de diagramas Mermaid (quando houver)
 - Conversão Markdown → HTML
 - Conversão HTML → PDF
 - Biblioteca usada (WeasyPrint ou xhtml2pdf)
 - Número de páginas geradas
+
+#### Opções PlantUML
+
+```bash
+# Definir tema dos diagramas PlantUML
+pdf-cli md-to-pdf arquitetura.md arquitetura.pdf --plantuml-theme plain
+
+# Desabilitar renderização PlantUML
+pdf-cli md-to-pdf documento.md documento.pdf --disable-plantuml
+```
+
+**Observações:**
+- `--plantuml-theme` define tema opcional para PlantUML
+- Se houver bloco PlantUML e nenhum renderer instalado, o comando retorna erro claro
+- Renderers detectados automaticamente:
+  - `plantuml` no PATH
+- Opcional: definir comando customizado pela variável `PDF_CLI_PLANTUML_COMMAND`
+
+#### Opções Mermaid
+
+```bash
+# Definir tema dos diagramas Mermaid
+pdf-cli md-to-pdf arquitetura.md arquitetura.pdf --mermaid-theme dark
+
+# Desabilitar renderização Mermaid
+pdf-cli md-to-pdf documento.md documento.pdf --disable-mermaid
+```
+
+**Observações:**
+- `--mermaid-theme` aceita temas comuns: `default`, `dark`, `forest`, `neutral`
+- Se houver bloco Mermaid e nenhum renderer instalado, o comando retorna erro claro
+- Renderers detectados automaticamente:
+  - `mmdc` no PATH
+  - `npx -y @mermaid-js/mermaid-cli`
+- Opcional: definir comando customizado pela variável `PDF_CLI_MERMAID_COMMAND`
 
 #### Suporte a Markdown
 

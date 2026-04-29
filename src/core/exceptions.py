@@ -21,6 +21,66 @@ class PDFCliException(Exception):
     pass
 
 
+class MermaidRendererNotAvailableError(PDFCliException):
+    """
+    Exceção lançada quando nenhum renderer Mermaid está disponível no ambiente.
+
+    O comando `md-to-pdf` depende de um renderer Mermaid externo para converter
+    blocos ```mermaid``` em imagens (normalmente PNG).
+    """
+
+    def __init__(self, message: Optional[str] = None):
+        self.message = message or (
+            "Renderer Mermaid nao encontrado. "
+            "Instale o Mermaid CLI (`npm install -g @mermaid-js/mermaid-cli`) "
+            "ou disponibilize `npx` no PATH."
+        )
+        super().__init__(self.message)
+
+
+class MermaidRenderingError(PDFCliException):
+    """
+    Exceção lançada quando a renderização de um diagrama Mermaid falha.
+
+    Essa exceção representa erro real de conversão do script Mermaid para imagem,
+    como sintaxe inválida, falha do processo externo ou arquivo de saída ausente.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+
+
+class PlantUMLRendererNotAvailableError(PDFCliException):
+    """
+    Exceção lançada quando nenhum renderer PlantUML está disponível no ambiente.
+
+    O comando `md-to-pdf` depende de um renderer externo para converter
+    blocos PlantUML e arquivos `.plantuml` em imagens PNG.
+    """
+
+    def __init__(self, message: Optional[str] = None):
+        self.message = message or (
+            "Renderer PlantUML nao encontrado. "
+            "Instale o comando `plantuml` no PATH ou defina "
+            "PDF_CLI_PLANTUML_COMMAND com um comando valido."
+        )
+        super().__init__(self.message)
+
+
+class PlantUMLRenderingError(PDFCliException):
+    """
+    Exceção lançada quando a renderização de um diagrama PlantUML falha.
+
+    Essa exceção representa erro real de conversão de código PlantUML para imagem,
+    incluindo sintaxe inválida, falha do processo externo ou saída PNG ausente.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+
+
 class PDFFileNotFoundError(PDFCliException):
     """
     Exceção lançada quando um arquivo PDF não é encontrado.

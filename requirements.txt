@@ -12,6 +12,8 @@ Pillow>=10.0.0   # Manipulação de imagens (filtros grayscale, invert)
 markdown2>=2.4.0  # Conversão de Markdown para HTML
 weasyprint>=59.0  # Conversão de HTML para PDF (preferido, mas requer libs do sistema no Windows)
 xhtml2pdf>=0.2.17  # Fallback para HTML->PDF (portável, funciona no Windows sem dependências externas)
+# Mermaid em md-to-pdf (opcional): requer Node.js + @mermaid-js/mermaid-cli (mmdc) ou npx
+# PlantUML em md-to-pdf (opcional): requer comando `plantuml` no PATH
 
 # Conversão PDF para Markdown/HTML (Fase 10)
 pdfplumber>=0.11.0  # Extração alternativa de texto do PDF (multiplataforma)

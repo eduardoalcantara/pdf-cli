@@ -80,6 +80,8 @@
   - ✅ Suporte a CSS customizado via `--css`
   - ✅ Sistema multiplataforma com fallback automático (WeasyPrint/xhtml2pdf)
   - ✅ Suporta: títulos, listas, tabelas, blocos de código, imagens, links, citações
+  - ✅ Suporte a blocos PlantUML (`plantuml`/`plantxml`) e arquivos `.plantuml` locais
+  - ✅ Suporte a blocos Mermaid (`mermaid`) renderizados como imagens PNG
 
 ---
 
@@ -133,6 +135,12 @@ python src/pdf_cli.py --help
 - **Windows**: Use `xhtml2pdf` (instalado automaticamente) - funciona sem dependências externas
 - **Linux**: Pode usar `weasyprint` (melhor qualidade) ou `xhtml2pdf` (portável)
   - WeasyPrint no Linux: `sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0`
+- **PlantUML (opcional)**: para renderizar `plantuml`/`plantxml` e `.plantuml` instale:
+  - comando `plantuml` no PATH
+  - ou defina `PDF_CLI_PLANTUML_COMMAND` com um comando customizado
+- **Mermaid (opcional)**: para renderizar blocos `mermaid` instale:
+  - `npm install -g @mermaid-js/mermaid-cli` (comando `mmdc`)
+  - ou mantenha `npx` disponível no PATH
 
 ---
 
@@ -244,6 +252,18 @@ pdf-cli md-to-pdf documento.md documento.pdf
 
 # Com CSS customizado
 pdf-cli md-to-pdf manual.md manual.pdf --css styles/custom.css
+
+# Com PlantUML em tema específico
+pdf-cli md-to-pdf arquitetura.md arquitetura.pdf --plantuml-theme plain
+
+# Sem renderizar PlantUML
+pdf-cli md-to-pdf notas.md notas.pdf --disable-plantuml
+
+# Com diagramas Mermaid em tema dark
+pdf-cli md-to-pdf arquitetura.md arquitetura.pdf --mermaid-theme dark
+
+# Sem renderizar Mermaid (mantém blocos como código)
+pdf-cli md-to-pdf notas.md notas.pdf --disable-mermaid
 
 # Com informações detalhadas
 pdf-cli md-to-pdf README.md README.pdf --verbose
