@@ -14,12 +14,13 @@ Suporte a Emojis e Símbolos Unicode:
 - macOS: Apple Color Emoji
 - Linux: Noto Color Emoji, Noto Emoji
 - Fallback para fontes padrão se fontes de emoji não estiverem disponíveis
-- Suporte a caracteres box-drawing (├──, └──, │) com fontes monospace
+- Suporte a caracteres box-drawing (├──, └──, │) com fontes monospace; no xhtml2pdf
+  são também convertidos para ASCII (+, |, -) para evitar quadrados incorretos
 
 Limitações Conhecidas:
 - xhtml2pdf (fallback) tem limitações com Unicode complexo:
-  * Emojis podem aparecer como quadrados pretos
-  * Caracteres box-drawing podem ser renderizados incorretamente
+  * Emojis coloridos podem aparecer como quadrados; alguns são substituídos por texto (ex.: aviso ⚠️ -> [!])
+  * Blocos monospace usam stack com Segoe UI Symbol (Windows) / DejaVu (Linux) para box-drawing
 - WeasyPrint oferece melhor suporte a Unicode quando disponível
 - Recomendado usar WeasyPrint no Linux para melhor qualidade
 """
@@ -163,8 +164,10 @@ def _get_default_css() -> str:
     # Fontes de emoji por plataforma
     if system == 'Windows':
         emoji_fonts = '"Segoe UI Emoji", "Segoe UI Symbol"'
-        # Fontes monospace com suporte a box-drawing no Windows
-        monospace_fonts = '"Consolas", "Courier New", "Lucida Console", monospace'
+        # Segoe UI Symbol antes de Consolas: cobre box-drawing (├──), setas (←) e símbolos em <pre>
+        monospace_fonts = (
+            '"Segoe UI Symbol", "Consolas", "Courier New", "Lucida Console", monospace'
+        )
     elif system == 'Darwin':  # macOS
         emoji_fonts = '"Apple Color Emoji"'
         monospace_fonts = '"Menlo", "Monaco", "Courier New", monospace'
@@ -243,10 +246,12 @@ p {{
     border-radius: 5px;
     padding: 1em;
     margin: 1em 0;
-    white-space: pre;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
     font-size: 9pt;
     line-height: 1.4;
-    overflow-x: auto;
+    overflow-x: visible;
 }}
 
 ul, ol {{
@@ -274,12 +279,14 @@ pre {{
     border: 1px solid #ddd;
     border-radius: 5px;
     padding: 1em;
-    overflow-x: auto;
+    overflow-x: visible;
     font-family: {monospace_fonts};
     font-size: 9pt;
     line-height: 1.4;
-    /* Preservar formatação e caracteres especiais */
-    white-space: pre;
+    /* pre-wrap evita corte no PDF; word-wrap para linhas longas (TypeScript etc.) */
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
     font-variant-ligatures: none;
 }}
 
@@ -295,18 +302,25 @@ blockquote {{
     padding-left: 1em;
     color: #7f8c8d;
     font-style: italic;
+    /* xhtml2pdf: itálico sem stack de emoji tende a perder glifos (ex.: ⚠️) */
+    font-family: {emoji_fonts}, "DejaVu Sans", Arial, sans-serif;
 }}
 
 table {{
     border-collapse: collapse;
     width: 100%;
     margin: 1em 0;
+    table-layout: fixed;
 }}
 
 th, td {{
     border: 1px solid #ddd;
     padding: 0.5em;
     text-align: left;
+    vertical-align: top;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }}
 
 th {{
@@ -344,6 +358,75 @@ hr {{
 
 # CSS padrão (mantido para compatibilidade, mas usar _get_default_css() é recomendado)
 DEFAULT_CSS = _get_default_css()
+
+_MARKDOWN2_EXTRAS = [
+    'fenced-code-blocks',
+    'tables',
+    'break-on-newline',
+    'code-friendly',
+    'header-ids',
+]
+
+
+def _substitute_xhtml2pdf_problematic_chars(text: str) -> str:
+    """
+    Substitui caracteres que o xhtml2pdf/ReportLab costuma renderizar como quadrados
+    ou glifos incorretos.
+
+    Mantém o Markdown legível; aplicado só no fluxo xhtml2pdf (WeasyPrint não precisa).
+    """
+    # Box Drawing (U+2500..U+257F): ReportLab muitas vezes não mapeia bem → ASCII
+    box_map = {
+        '\u2500': '-',  # ─
+        '\u2502': '|',  # │
+        '\u251c': '+',  # ├
+        '\u2514': '`',  # └
+        '\u252c': '+',  # ┬
+        '\u2534': '+',  # ┴
+        '\u253c': '+',  # ┼
+        '\u250c': '+',  # ┌
+        '\u2510': '+',  # ┐
+        '\u2518': '+',  # ┘
+    }
+    out: list[str] = []
+    for ch in text:
+        o = ord(ch)
+        if 0x2500 <= o <= 0x257F:
+            out.append(box_map.get(ch, '-'))
+        else:
+            out.append(ch)
+    text = ''.join(out)
+
+    replacements = (
+        ("\u26a0\ufe0f", "[!]"),  # ⚠️ (U+26A0 + VS16)
+        ("\u26a0", "[!]"),      # ⚠ sem seletor de estilo
+    )
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
+
+def _markdown_to_body_html(md_content: str) -> str:
+    """Converte Markdown para fragmento HTML do body (com pós-processamento de box-drawing)."""
+    html_content = markdown2.markdown(md_content, extras=_MARKDOWN2_EXTRAS)
+    return _process_html_for_special_chars(html_content)
+
+
+def _wrap_full_html(body_html: str, document_title: str) -> str:
+    """Envolve o HTML do body em documento completo para WeasyPrint/xhtml2pdf."""
+    return f"""
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF gerado de {document_title}</title>
+</head>
+<body>
+{body_html}
+</body>
+</html>
+"""
 
 
 def _process_html_for_special_chars(html_content: str) -> str:
@@ -514,39 +597,12 @@ def convert_md_to_pdf(
 
         md_content = md_file.read_text(encoding='utf-8')
 
-        # Converter Markdown para HTML
         if verbose:
             print("[INFO] Convertendo Markdown para HTML...")
 
-        # Usar markdown2 com extensões para melhor suporte
-        html_content = markdown2.markdown(
-            md_content,
-            extras=[
-                'fenced-code-blocks',  # Blocos de código com ```
-                'tables',              # Tabelas
-                'break-on-newline',    # Quebras de linha
-                'code-friendly',       # Código mais amigável
-                'header-ids',          # IDs nos cabeçalhos
-            ]
-        )
-
-        # Processar HTML para preservar estruturas de diretórios e caracteres especiais
-        html_content = _process_html_for_special_chars(html_content)
-
-        # Criar HTML completo com CSS
-        full_html = f"""
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF gerado de {md_file.name}</title>
-</head>
-<body>
-{html_content}
-</body>
-</html>
-"""
+        def build_full_html(md_src: str) -> str:
+            body = _markdown_to_body_html(md_src)
+            return _wrap_full_html(body, md_file.name)
 
         # Converter HTML para PDF
         if verbose:
@@ -561,6 +617,7 @@ def convert_md_to_pdf(
         # Tentar usar WeasyPrint primeiro (melhor qualidade, suporte a Unicode/emojis)
         # Tem fallback automático para xhtml2pdf se falhar
         if WEASYPRINT_AVAILABLE:
+            full_html = build_full_html(md_content)
             try:
                 # Carregar CSS (customizado ou padrão)
                 if css_path:
@@ -619,7 +676,8 @@ def convert_md_to_pdf(
                         )
                     raise RuntimeError(error_msg)
 
-                # Usar xhtml2pdf
+                # Regenerar HTML com substituições amigáveis ao ReportLab
+                full_html = build_full_html(_substitute_xhtml2pdf_problematic_chars(md_content))
                 _convert_with_xhtml2pdf(full_html, pdf_path, css_path, base_url, verbose)
         elif XHTML2PDF_AVAILABLE:
             # Usar xhtml2pdf diretamente (WeasyPrint não disponível)
@@ -628,6 +686,7 @@ def convert_md_to_pdf(
                     print(f"[INFO] WeasyPrint nao disponivel: {WEASYPRINT_ERROR}")
                 print("[INFO] Usando xhtml2pdf (portavel, funciona em Windows e Linux)")
 
+            full_html = build_full_html(_substitute_xhtml2pdf_problematic_chars(md_content))
             _convert_with_xhtml2pdf(full_html, pdf_path, css_path, base_url, verbose)
         else:
             # Nenhuma biblioteca disponível
