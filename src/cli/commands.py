@@ -900,6 +900,7 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
         # Processar opções
         css_path = get_flag_value(args, 'css')
         verbose = has_flag(args, 'verbose', 'l')
+        landscape = has_flag(args, 'landscape')
 
         # Importar converter
         from app.md_converter import convert_md_to_pdf
@@ -907,12 +908,15 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
         # Executar conversão
         if verbose:
             print(f"[INFO] Convertendo {md_path} para {pdf_path}...")
+            if landscape:
+                print("[INFO] Orientacao: paisagem (--landscape)")
 
         result = convert_md_to_pdf(
             md_path=md_path,
             pdf_path=pdf_path,
             css_path=css_path,
-            verbose=verbose
+            verbose=verbose,
+            landscape=landscape,
         )
 
         if result['status'] == 'success':

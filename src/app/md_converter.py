@@ -19,16 +19,21 @@ Suporte a Emojis e Símbolos Unicode:
 
 Limitações Conhecidas:
 - xhtml2pdf (fallback) tem limitações com Unicode complexo:
-  * Emojis coloridos podem aparecer como quadrados; alguns são substituídos por texto (ex.: aviso ⚠️ -> [!])
+  * Emojis/símbolos (❌ ✅ ⚠️) são convertidos para texto ASCII ([X] [OK] [!])
   * Blocos monospace usam stack com Segoe UI Symbol (Windows) / DejaVu (Linux) para box-drawing
 - WeasyPrint oferece melhor suporte a Unicode quando disponível
 - Recomendado usar WeasyPrint no Linux para melhor qualidade
+
+Quebra de página manual no Markdown (linha inteira):
+- ``\\pagebreak`` | ``[pagebreak]`` | ``<!-- pdf-cli:pagebreak -->``
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
+import html as html_module
 import markdown2
 import platform
+import re
 import sys
 from app.logging import get_logger
 
@@ -147,7 +152,7 @@ except ImportError:
     pass
 
 
-def _get_default_css() -> str:
+def _get_default_css(landscape: bool = False) -> str:
     """
     Gera CSS padrão com suporte a emojis e caracteres especiais baseado na plataforma.
 
@@ -155,6 +160,10 @@ def _get_default_css() -> str:
     - Fontes de emoji por plataforma
     - Fontes monospace com suporte a box-drawing characters (├──, └──, │)
     - Suporte a símbolos Unicode especiais
+    - Orientação retrato (padrão) ou paisagem via parâmetro landscape
+
+    Args:
+        landscape: Se True, usa página A4 em paisagem (útil para tabelas largas).
 
     Returns:
         str: CSS completo com fontes apropriadas para a plataforma
@@ -176,11 +185,20 @@ def _get_default_css() -> str:
         # Fontes monospace com suporte a box-drawing no Linux
         monospace_fonts = '"DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace'
 
+    page_size = "A4 landscape" if landscape else "A4"
+    page_margin = "1.5cm" if landscape else "2cm"
+    # xhtml2pdf/ReportLab: padding em ``em`` quebra tabelas largas em paisagem;
+    # padding em ``px``/``pt`` quebra em retrato com muitas tabelas.
+    # xhtml2pdf/ReportLab: em paisagem, ``fixed`` + ``2pt`` evita colunas com largura negativa.
+    table_layout = "fixed"
+    cell_padding = "2pt" if landscape else "0.5em"
+    table_font_size = "7pt" if landscape else "8pt"
+
     # CSS padrão com suporte a emojis e caracteres especiais
     return f"""
 @page {{
-    size: A4;
-    margin: 2cm;
+    size: {page_size};
+    margin: {page_margin};
 }}
 
 body {{
@@ -310,17 +328,18 @@ table {{
     border-collapse: collapse;
     width: 100%;
     margin: 1em 0;
-    table-layout: fixed;
+    table-layout: {table_layout};
+    font-size: {table_font_size};
 }}
 
 th, td {{
     border: 1px solid #ddd;
-    padding: 0.5em;
+    padding: {cell_padding};
     text-align: left;
     vertical-align: top;
     word-wrap: break-word;
     overflow-wrap: break-word;
-    word-break: break-word;
+    line-height: 1.25;
 }}
 
 th {{
@@ -354,9 +373,21 @@ hr {{
     border-top: 1px solid #ddd;
     margin: 2em 0;
 }}
+
+/* Quebra de página manual: use \\pagebreak, [pagebreak] ou <!-- pdf-cli:pagebreak --> no .md */
+.pdf-cli-page-break {{
+    display: block;
+    page-break-before: always;
+    break-before: page;
+    height: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    visibility: hidden;
+}}
 """
 
-# CSS padrão (mantido para compatibilidade, mas usar _get_default_css() é recomendado)
+# CSS padrão retrato (mantido para compatibilidade; preferir _get_default_css())
 DEFAULT_CSS = _get_default_css()
 
 _MARKDOWN2_EXTRAS = [
@@ -366,6 +397,106 @@ _MARKDOWN2_EXTRAS = [
     'code-friendly',
     'header-ids',
 ]
+
+# Marcadores de quebra de página aceitos no Markdown (linha inteira).
+# ``---`` (regra horizontal Markdown) também vira nova página no PDF.
+_PAGE_BREAK_LINE_PATTERNS = (
+    r'^\s*\\pagebreak\s*$',
+    r'^\s*\[pagebreak\]\s*$',
+    r'^\s*<!--\s*pdf-cli:pagebreak\s*-->\s*$',
+    r'^\s*---\s*$',
+)
+
+_PAGE_BREAK_HTML = '\n<div class="pdf-cli-page-break"></div>\n'
+
+# Substituições de símbolos Unicode → texto ASCII para xhtml2pdf/ReportLab.
+_XHTML2PDF_SYMBOL_REPLACEMENTS = (
+    ("\u274c\ufe0f", "[X]"),   # ❌ + VS16
+    ("\u274c", "[X]"),         # ❌
+    ("\u2705\ufe0f", "[OK]"),  # ✅ + VS16
+    ("\u2705", "[OK]"),        # ✅
+    ("\u2713\ufe0f", "[v]"),   # ✓ + VS16
+    ("\u2713", "[v]"),         # ✓
+    ("\u2717", "[x]"),         # ✗
+    ("\u2718", "[x]"),         # ✘
+    ("\u26a0\ufe0f", "[!]"),   # ⚠️
+    ("\u26a0", "[!]"),         # ⚠
+    ("\u2753\ufe0f", "[?]"),   # ❓ + VS16
+    ("\u2753", "[?]"),         # ❓
+    ("\U0001f50d\ufe0f", "[~]"),  # 🔍 + VS16
+    ("\U0001f50d", "[~]"),        # 🔍
+)
+
+# Limites globais de fallback para colunas sem perfil reconhecido.
+_COL_WIDTH_MIN_PCT = 6.0
+_COL_WIDTH_MAX_PCT = 36.0
+
+
+def _column_profile_for_header(header: str) -> dict:
+    """
+    Perfil de largura por tipo de coluna (cabeçalho).
+
+    ``data_only``: mede largura só pelas linhas de dados, não pelo título
+    (evita que "Habilitado" estique a coluna; o conteúdo é só ``[X]``).
+    """
+    h = re.sub(r'[^\w\s-]', '', header.lower()).strip()
+    h_norm = h.replace('í', 'i').replace('ó', 'o')
+
+    if 'habilitado' in h or h in ('status', 'ativo'):
+        return {'min_pct': 5.0, 'max_pct': 7.5, 'data_only': True}
+    if 'simbolo' in h_norm:
+        return {'min_pct': 6.0, 'max_pct': 9.0, 'data_only': True}
+    if 'significado' in h:
+        return {'min_pct': 28.0, 'max_pct': 75.0, 'data_only': False}
+    if h == 'nome' or h.startswith('nome'):
+        return {'min_pct': 17.0, 'max_pct': 26.0, 'data_only': False}
+    if 'cargo' in h:
+        return {'min_pct': 11.0, 'max_pct': 20.0, 'data_only': False}
+    if 'setor' in h:
+        return {'min_pct': 8.0, 'max_pct': 14.0, 'data_only': False}
+    if 'mail' in h or h == 'login' or 'e-mail' in h:
+        return {'min_pct': 12.0, 'max_pct': 18.0, 'data_only': False}
+    if 'grupo' in h:
+        return {'min_pct': 8.0, 'max_pct': 12.0, 'data_only': False}
+    if 'zona' in h:
+        return {'min_pct': 20.0, 'max_pct': 34.0, 'data_only': False}
+
+    return {
+        'min_pct': _COL_WIDTH_MIN_PCT,
+        'max_pct': _COL_WIDTH_MAX_PCT,
+        'data_only': False,
+    }
+
+
+def _preprocess_markdown(md_content: str) -> str:
+    """
+    Pré-processa Markdown antes da conversão para HTML.
+
+    Converte marcadores de quebra de página em bloco HTML compatível com
+    WeasyPrint e xhtml2pdf.
+
+    Marcadores aceitos (linha inteira no .md):
+
+    - ``\\pagebreak``
+    - ``[pagebreak]``
+    - ``<!-- pdf-cli:pagebreak -->``
+    - ``---`` (regra horizontal Markdown → nova página; não afeta ``|------|`` em tabelas)
+
+    Args:
+        md_content: Conteúdo Markdown original.
+
+    Returns:
+        str: Markdown com quebras de página materializadas em HTML.
+    """
+    processed = md_content
+    for pattern in _PAGE_BREAK_LINE_PATTERNS:
+        processed = re.sub(
+            pattern,
+            _PAGE_BREAK_HTML,
+            processed,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+    return processed
 
 
 def _substitute_xhtml2pdf_problematic_chars(text: str) -> str:
@@ -397,12 +528,13 @@ def _substitute_xhtml2pdf_problematic_chars(text: str) -> str:
             out.append(ch)
     text = ''.join(out)
 
-    replacements = (
-        ("\u26a0\ufe0f", "[!]"),  # ⚠️ (U+26A0 + VS16)
-        ("\u26a0", "[!]"),      # ⚠ sem seletor de estilo
-    )
-    for old, new in replacements:
+    for old, new in _XHTML2PDF_SYMBOL_REPLACEMENTS:
         text = text.replace(old, new)
+
+    # Caracteres invisíveis (ex.: U+200B) viram quadrados pretos no ReportLab
+    for invisible in ('\u200b', '\u200c', '\u200d', '\ufeff', '\u00ad'):
+        text = text.replace(invisible, '')
+
     return text
 
 
@@ -471,12 +603,444 @@ def _process_html_for_special_chars(html_content: str) -> str:
     return processed
 
 
+def _fix_pre_line_breaks_for_xhtml2pdf(html_content: str) -> str:
+    """
+    Converte quebras de linha em blocos ``<pre>`` para ``<br/>``.
+
+    xhtml2pdf/ReportLab não respeita ``white-space: pre`` ou ``pre-wrap``;
+    sem isso, blocos fenced (```) aparecem como uma única linha quebrada
+    apenas por word-wrap.
+    """
+    import re
+
+    def replace_pre_block(match) -> str:
+        attrs = match.group(1)
+        inner = match.group(2)
+        inner = inner.replace('\r\n', '\n').replace('\r', '\n')
+        inner = re.sub(r'\n', '<br/>\n', inner)
+        return f'<pre{attrs}>{inner}</pre>'
+
+    return re.sub(
+        r'<pre([^>]*)>(.*?)</pre>',
+        replace_pre_block,
+        html_content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+
+def _break_cell_content_for_xhtml2pdf(text: str) -> str:
+    """
+    Insere ``<br/>`` em pontos seguros para o xhtml2pdf quebrar linhas em células.
+
+    Não usa zero-width space (U+200B): o ReportLab renderiza como quadrado preto.
+    """
+    if not text or not text.strip():
+        return text
+
+    text = text.replace('\u200b', '').replace('\ufeff', '')
+
+    # Zonas eleitorais: quebrar após cada " - "
+    if ' - ' in text:
+        text = text.replace(' - ', '<br/>- ')
+
+    # E-mails: quebrar só após @ (a largura da coluna cuida do restante)
+    if '@' in text:
+        text = text.replace('@', '@<br/>')
+
+    return text
+
+
+def _fix_table_cells_for_xhtml2pdf(html_content: str) -> str:
+    """
+    Aplica quebras ``<br/>`` no conteúdo textual de células ``<th>``/``<td>``.
+
+    Ignora células com HTML aninhado (links, formatação).
+    """
+    def replace_cell(match) -> str:
+        tag = match.group(1)
+        attrs = match.group(2)
+        inner = match.group(3)
+        if re.search(r'<[a-z]', inner, re.IGNORECASE):
+            return match.group(0)
+        return f'<{tag}{attrs}>{_break_cell_content_for_xhtml2pdf(inner)}</{tag}>'
+
+    return re.sub(
+        r'<(t[hd])([^>]*)>(.*?)</\1>',
+        replace_cell,
+        html_content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+
+def _strip_html_to_text(cell_html: str) -> str:
+    """Extrai texto plano de uma célula HTML para medição de largura."""
+    plain = re.sub(r'<[^>]+>', '', cell_html)
+    return html_module.unescape(plain).strip()
+
+
+def _measure_cell_content_width(text: str) -> float:
+    """
+    Estima a largura de conteúdo de uma célula (análogo ao min-content do HTML).
+
+    Usa o maior token da célula (palavra, e-mail, código) como base, com peso
+    extra quando há várias palavras na mesma linha.
+    """
+    text = re.sub(r'\s+', ' ', text.strip())
+    if not text:
+        return 0.0
+
+    tokens = [t for t in re.split(r'\s+', text) if t]
+    if not tokens:
+        return 0.0
+
+    max_token = float(max(len(t) for t in tokens))
+    if len(tokens) == 1:
+        return max_token
+
+    return max(max_token, len(text) * 0.3)
+
+
+def _extract_table_matrix(table_html: str) -> List[List[str]]:
+    """Extrai matriz [linha][coluna] com texto de cada célula da tabela."""
+    rows: List[List[str]] = []
+    for tr_match in re.finditer(
+        r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL | re.IGNORECASE
+    ):
+        cells: List[str] = []
+        for cell_match in re.finditer(
+            r'<t[hd]([^>]*)>(.*?)</t[hd]>',
+            tr_match.group(1),
+            re.DOTALL | re.IGNORECASE,
+        ):
+            cells.append(_strip_html_to_text(cell_match.group(2)))
+        if cells:
+            rows.append(cells)
+    return rows
+
+
+def _normalize_table_rows(rows: List[List[str]]) -> List[List[str]]:
+    """Garante que todas as linhas tenham o mesmo número de colunas."""
+    if not rows:
+        return rows
+    col_count = max(len(row) for row in rows)
+    return [row + [''] * (col_count - len(row)) for row in rows]
+
+
+def _column_content_measures(rows: List[List[str]]) -> tuple[List[float], List[str]]:
+    """
+    Para cada coluna, retorna a maior medida de conteúdo relevante.
+
+    Colunas ``data_only`` (ex.: Habilitado) ignoram o título longo e usam
+    apenas o conteúdo das linhas de dados (``[X]``, ``[OK]``).
+    """
+    rows = _normalize_table_rows(rows)
+    if not rows:
+        return [], []
+
+    headers = rows[0]
+    data_rows = rows[1:] if len(rows) > 1 else []
+    measures: List[float] = []
+
+    for col_idx, header in enumerate(headers):
+        profile = _column_profile_for_header(header)
+        if profile['data_only'] and data_rows:
+            col_max = max(
+                (_measure_cell_content_width(row[col_idx]) for row in data_rows),
+                default=3.0,
+            )
+        else:
+            col_max = _measure_cell_content_width(header)
+            for row in data_rows:
+                col_max = max(col_max, _measure_cell_content_width(row[col_idx]))
+        measures.append(max(col_max, 1.0))
+
+    return measures, headers
+
+
+def _distribute_column_widths_percent(
+    measures: List[float],
+    headers: List[str],
+) -> List[str]:
+    """
+    Distribui 100% entre colunas proporcionalmente às medidas de conteúdo.
+
+    Usa pisos e tetos por tipo de coluna (nome, cargo, e-mail, habilitado…).
+    """
+    col_count = len(measures)
+    if col_count == 0:
+        return []
+
+    if col_count == 1:
+        return ['100%']
+
+    profiles = [
+        _column_profile_for_header(headers[i]) if i < len(headers) else {
+            'min_pct': _COL_WIDTH_MIN_PCT,
+            'max_pct': _COL_WIDTH_MAX_PCT,
+            'data_only': False,
+        }
+        for i in range(col_count)
+    ]
+
+    weights = [max(m, 1.0) for m in measures]
+    total = sum(weights)
+    percents = [100.0 * w / total for w in weights]
+
+    for idx in range(col_count):
+        percents[idx] = max(percents[idx], profiles[idx]['min_pct'])
+
+    total = sum(percents)
+    percents = [p * 100.0 / total for p in percents]
+
+    for _ in range(col_count + 2):
+        excess = 0.0
+        uncapped: List[int] = []
+        changed = False
+        for idx, pct in enumerate(percents):
+            cap = profiles[idx]['max_pct']
+            if pct > cap:
+                excess += pct - cap
+                percents[idx] = cap
+                changed = True
+            else:
+                uncapped.append(idx)
+        if excess <= 0.0 or not uncapped:
+            break
+        share = excess / len(uncapped)
+        for idx in uncapped:
+            percents[idx] += share
+        if not changed:
+            break
+
+    total = sum(percents)
+    percents = [p * 100.0 / total for p in percents]
+    return [f'{pct:.1f}%' for pct in percents]
+
+
+def _compute_table_column_widths(table_html: str) -> Optional[List[str]]:
+    """
+    Calcula larguras percentuais das colunas com base no conteúdo da tabela.
+
+    Returns:
+        Lista de larguras CSS ou None se a tabela não puder ser analisada.
+    """
+    rows = _extract_table_matrix(table_html)
+    if not rows:
+        return None
+
+    measures, headers = _column_content_measures(rows)
+    if not measures:
+        return None
+
+    return _distribute_column_widths_percent(measures, headers)
+
+
+def _merge_html_style_attr(attrs: str, style_additions: str) -> str:
+    """Acrescenta declarações CSS ao atributo ``style`` de uma tag HTML."""
+    style_additions = style_additions.strip()
+    if not style_additions:
+        return attrs
+    if not style_additions.endswith(';'):
+        style_additions += ';'
+
+    style_match = re.search(r'\bstyle="([^"]*)"', attrs, re.IGNORECASE)
+    if style_match:
+        existing = style_match.group(1).strip()
+        if existing and not existing.endswith(';'):
+            existing += ';'
+        merged = f'{existing}{style_additions}'
+        return re.sub(
+            r'\bstyle="[^"]*"',
+            f'style="{merged}"',
+            attrs,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return f'{attrs} style="{style_additions}"'
+
+
+def _cell_column_inline_style(width: str, header: str, is_header: bool) -> str:
+    """
+    Estilo inline por coluna para o xhtml2pdf respeitar larguras.
+
+    O ReportLab costuma ignorar ``<colgroup>``; ``width``/``max-width`` em
+    ``th``/``td`` são mais confiáveis com ``table-layout: fixed``.
+    """
+    profile = _column_profile_for_header(header)
+    parts = [f'width:{width}', f'max-width:{width}']
+    if profile.get('data_only'):
+        parts.append('text-align:center')
+        if is_header:
+            parts.append('font-size:6pt')
+            parts.append('line-height:1.1')
+    return ';'.join(parts) + ';'
+
+
+def _apply_table_column_width_styles(table_html: str, widths: List[str]) -> str:
+    """
+    Aplica ``width``/``max-width`` inline em cada ``th``/``td`` da tabela.
+
+    Células vazias na coluna Cargo recebem ``&#160;`` para evitar colapso
+    da coluna quando o xhtml2pdf ignora percentuais do ``colgroup``.
+    """
+    matrix = _extract_table_matrix(table_html)
+    if not matrix:
+        return table_html
+
+    headers = matrix[0]
+    header_profiles = [
+        _column_profile_for_header(headers[i]) if i < len(headers) else {}
+        for i in range(len(widths))
+    ]
+
+    def patch_row(row_html: str) -> str:
+        col_idx = 0
+
+        def patch_cell(cell_match: re.Match) -> str:
+            nonlocal col_idx
+            if col_idx >= len(widths):
+                return cell_match.group(0)
+
+            tag = cell_match.group(1).lower()
+            attrs = cell_match.group(2)
+            inner = cell_match.group(3)
+            header = headers[col_idx] if col_idx < len(headers) else ''
+            profile = header_profiles[col_idx] if col_idx < len(header_profiles) else {}
+            style = _cell_column_inline_style(
+                widths[col_idx],
+                header,
+                is_header=(tag == 'th'),
+            )
+            attrs = _merge_html_style_attr(attrs, style)
+
+            if tag == 'th' and profile.get('data_only'):
+                plain = _strip_html_to_text(inner)
+                if len(plain) > 5:
+                    inner = 'Hab.'
+
+            if (
+                tag == 'td'
+                and col_idx < len(header_profiles)
+                and 'cargo' in header.lower()
+                and not _strip_html_to_text(inner)
+            ):
+                inner = '&#160;'
+
+            col_idx += 1
+            return f'<{tag}{attrs}>{inner}</{tag}>'
+
+        return re.sub(
+            r'<(th|td)([^>]*)>(.*?)</\1>',
+            patch_cell,
+            row_html,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+    def patch_table(match: re.Match) -> str:
+        open_tr = match.group(1)
+        row_inner = match.group(2)
+        close_tr = match.group(3)
+        return f'{open_tr}{patch_row(row_inner)}{close_tr}'
+
+    return re.sub(
+        r'(<tr[^>]*>)(.*?)(</tr>)',
+        patch_table,
+        table_html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+
+def _inject_table_colgroups_for_xhtml2pdf(html_content: str) -> str:
+    """
+    Injeta ``<colgroup>`` com larguras calculadas pelo conteúdo de cada coluna.
+
+    Simula o ``table-layout: auto`` do HTML: cada coluna recebe peso
+    proporcional ao seu conteúdo mais largo, com piso e teto percentuais.
+    """
+    def inject_colgroup(match) -> str:
+        table_tag = match.group(1)
+        table_body = match.group(2)
+        if '<colgroup' in table_body[:400].lower():
+            return match.group(0)
+
+        widths = _compute_table_column_widths(table_body)
+        if not widths:
+            return match.group(0)
+
+        colgroup = '<colgroup>' + ''.join(
+            f'<col style="width:{width};" />' for width in widths
+        ) + '</colgroup>'
+        styled_body = _apply_table_column_width_styles(table_body, widths)
+        return f'{table_tag}{colgroup}{styled_body}'
+
+    return re.sub(
+        r'(<table[^>]*>)([\s\S]*?</table>)',
+        inject_colgroup,
+        html_content,
+        flags=re.IGNORECASE,
+    )
+
+
+def _prepare_html_for_xhtml2pdf(html_content: str) -> str:
+    """Pós-processa HTML para compatibilidade com limitações do xhtml2pdf."""
+    html_content = _fix_pre_line_breaks_for_xhtml2pdf(html_content)
+    html_content = _inject_table_colgroups_for_xhtml2pdf(html_content)
+    return _fix_table_cells_for_xhtml2pdf(html_content)
+
+
+def _resolve_css_content(
+    css_path: Optional[str],
+    landscape: bool = False,
+) -> str:
+    """
+    Resolve o CSS final para geração do PDF.
+
+    Args:
+        css_path: Caminho opcional para CSS customizado.
+        landscape: Se True, força orientação paisagem na regra @page.
+
+    Returns:
+        str: Conteúdo CSS a aplicar.
+    """
+    if css_path:
+        css_file = Path(css_path)
+        if not css_file.exists():
+            raise FileNotFoundError(f"Arquivo CSS nao encontrado: {css_path}")
+        css_content = css_file.read_text(encoding='utf-8')
+    else:
+        css_content = _get_default_css(landscape=landscape)
+        return css_content
+
+    if landscape:
+        css_content += """
+
+/* Orientacao paisagem (--landscape) */
+@page {
+    size: A4 landscape;
+    margin: 1.5cm;
+}
+
+table {
+    table-layout: fixed;
+    font-size: 7pt;
+}
+
+th, td {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    padding: 2pt;
+}
+"""
+    return css_content
+
+
 def _convert_with_xhtml2pdf(
     html_content: str,
     pdf_path: str,
     css_path: Optional[str],
     base_url: str,
-    verbose: bool
+    verbose: bool,
+    landscape: bool = False,
 ) -> None:
     """
     Converte HTML para PDF usando xhtml2pdf (fallback para Windows).
@@ -487,23 +1051,16 @@ def _convert_with_xhtml2pdf(
         css_path: Caminho opcional para CSS customizado
         base_url: URL base para recursos (imagens, etc.)
         verbose: Se True, exibe informações detalhadas
+        landscape: Se True, gera páginas em orientação paisagem
     """
     from io import BytesIO
 
-    # Carregar CSS (customizado ou padrão com suporte a emojis)
-    css_content = _get_default_css()
-    if css_path:
-        css_file = Path(css_path)
-        if not css_file.exists():
-            raise FileNotFoundError(f"Arquivo CSS nao encontrado: {css_path}")
-
-        if verbose:
-            print(f"[INFO] Usando CSS customizado: {css_path}")
-
-        css_content = css_file.read_text(encoding='utf-8')
-    else:
-        if verbose:
-            print("[INFO] Usando CSS padrao (xhtml2pdf)")
+    css_content = _resolve_css_content(css_path, landscape=landscape)
+    if css_path and verbose:
+        print(f"[INFO] Usando CSS customizado: {css_path}")
+    elif verbose:
+        orientation = "paisagem" if landscape else "retrato"
+        print(f"[INFO] Usando CSS padrao (xhtml2pdf, {orientation})")
 
     # Inserir CSS no HTML (xhtml2pdf precisa do CSS inline ou em <style>)
     # Extrair apenas o conteúdo do body se existir
@@ -514,6 +1071,8 @@ def _convert_with_xhtml2pdf(
     else:
         # Se não tiver body, usar o conteúdo completo
         body_content = html_content
+
+    body_content = _prepare_html_for_xhtml2pdf(body_content)
 
     html_with_css = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -549,7 +1108,8 @@ def convert_md_to_pdf(
     md_path: str,
     pdf_path: str,
     css_path: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    landscape: bool = False,
 ) -> dict:
     """
     Converte um arquivo Markdown para PDF.
@@ -559,6 +1119,7 @@ def convert_md_to_pdf(
         pdf_path: Caminho do arquivo PDF de saída (.pdf)
         css_path: Caminho opcional para arquivo CSS customizado
         verbose: Se True, exibe informações detalhadas
+        landscape: Se True, gera páginas em orientação paisagem (recomendado para tabelas largas)
 
     Returns:
         dict: Dicionário com informações sobre a conversão:
@@ -596,6 +1157,7 @@ def convert_md_to_pdf(
             print(f"[INFO] Lendo arquivo markdown: {md_path}")
 
         md_content = md_file.read_text(encoding='utf-8')
+        md_content = _preprocess_markdown(md_content)
 
         if verbose:
             print("[INFO] Convertendo Markdown para HTML...")
@@ -603,6 +1165,10 @@ def convert_md_to_pdf(
         def build_full_html(md_src: str) -> str:
             body = _markdown_to_body_html(md_src)
             return _wrap_full_html(body, md_file.name)
+
+        def build_xhtml2pdf_html(md_src: str) -> str:
+            """HTML para xhtml2pdf com símbolos substituídos por equivalentes ASCII."""
+            return build_full_html(_substitute_xhtml2pdf_problematic_chars(md_src))
 
         # Converter HTML para PDF
         if verbose:
@@ -619,22 +1185,15 @@ def convert_md_to_pdf(
         if WEASYPRINT_AVAILABLE:
             full_html = build_full_html(md_content)
             try:
-                # Carregar CSS (customizado ou padrão)
+                css_content_str = _resolve_css_content(css_path, landscape=landscape)
                 if css_path:
-                    css_file = Path(css_path)
-                    if not css_file.exists():
-                        raise FileNotFoundError(f"Arquivo CSS nao encontrado: {css_path}")
-
                     if verbose:
                         print(f"[INFO] Usando CSS customizado: {css_path}")
+                elif verbose:
+                    orientation = "paisagem" if landscape else "retrato"
+                    print(f"[INFO] Usando CSS padrao (WeasyPrint, {orientation}) com suporte a emojis")
 
-                    css_content = css_file.read_text(encoding='utf-8')
-                    css_obj = CSS(string=css_content)
-                else:
-                    if verbose:
-                        print("[INFO] Usando CSS padrao (WeasyPrint) com suporte a emojis")
-
-                    css_obj = CSS(string=_get_default_css())
+                css_obj = CSS(string=css_content_str)
 
                 # Gerar PDF (aplicar filtro também durante uso, não apenas importação)
                 _original_stderr_use = sys.stderr
@@ -677,17 +1236,22 @@ def convert_md_to_pdf(
                     raise RuntimeError(error_msg)
 
                 # Regenerar HTML com substituições amigáveis ao ReportLab
-                full_html = build_full_html(_substitute_xhtml2pdf_problematic_chars(md_content))
-                _convert_with_xhtml2pdf(full_html, pdf_path, css_path, base_url, verbose)
+                full_html = build_xhtml2pdf_html(md_content)
+                _convert_with_xhtml2pdf(
+                    full_html, pdf_path, css_path, base_url, verbose, landscape=landscape
+                )
         elif XHTML2PDF_AVAILABLE:
             # Usar xhtml2pdf diretamente (WeasyPrint não disponível)
             if verbose:
                 if WEASYPRINT_ERROR:
                     print(f"[INFO] WeasyPrint nao disponivel: {WEASYPRINT_ERROR}")
                 print("[INFO] Usando xhtml2pdf (portavel, funciona em Windows e Linux)")
+                print("[INFO] Simbolos Unicode (ex.: emojis) serao convertidos para texto ASCII")
 
-            full_html = build_full_html(_substitute_xhtml2pdf_problematic_chars(md_content))
-            _convert_with_xhtml2pdf(full_html, pdf_path, css_path, base_url, verbose)
+            full_html = build_xhtml2pdf_html(md_content)
+            _convert_with_xhtml2pdf(
+                full_html, pdf_path, css_path, base_url, verbose, landscape=landscape
+            )
         else:
             # Nenhuma biblioteca disponível
             error_msg = (
@@ -736,6 +1300,7 @@ def convert_md_to_pdf(
             output_file=str(pdf_path),
             parameters={
                 'css_path': css_path,
+                'landscape': landscape,
                 'verbose': verbose
             },
             result={
@@ -767,6 +1332,7 @@ def convert_md_to_pdf(
             output_file=str(pdf_path),
             parameters={
                 'css_path': css_path,
+                'landscape': landscape,
                 'verbose': verbose
             },
             result={
