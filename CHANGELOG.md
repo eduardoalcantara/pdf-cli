@@ -2,6 +2,15 @@
 
 Todas as mudanças notáveis do projeto serão documentadas neste arquivo.
 
+## [Unreleased]
+
+### Melhorado
+- 🔧 **md-to-pdf — quebra de página**: `<!-- pdf-cli:pagebreak -->` passa a ser o marcador recomendado (invisível no preview Markdown)
+- 🔧 **md-to-pdf — compatibilidade**: `---` deixa de ser quebra de página por padrão; use `--pagebreak-on-hr` para o comportamento legado
+
+### Alterado
+- ⚠️ **pdf-to-md**: separadores entre páginas passam a usar `<!-- pdf-cli:pagebreak -->` em vez de `---`
+
 ## [0.8.0] - 2025-11-20 (Fase 8 - Distribuição Portátil e Scripts de Build Cross-platform)
 
 ### Adicionado

@@ -206,7 +206,7 @@ def _convert_to_markdown(pages_data: Dict[str, Any], pdf_path: str) -> str:
         # Separador de página (exceto primeira)
         if page_num > 0:
             md_parts.append('')
-            md_parts.append('---')
+            md_parts.append('<!-- pdf-cli:pagebreak -->')
             md_parts.append('')
 
         # Ordenar textos por posição (topo para baixo, esquerda para direita)

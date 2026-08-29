@@ -901,6 +901,7 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
         css_path = get_flag_value(args, 'css')
         verbose = has_flag(args, 'verbose', 'l')
         landscape = has_flag(args, 'landscape')
+        pagebreak_on_hr = has_flag(args, 'pagebreak-on-hr', 'pagebreak_on_hr')
 
         # Importar converter
         from app.md_converter import convert_md_to_pdf
@@ -910,6 +911,8 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
             print(f"[INFO] Convertendo {md_path} para {pdf_path}...")
             if landscape:
                 print("[INFO] Orientacao: paisagem (--landscape)")
+            if pagebreak_on_hr:
+                print("[INFO] Quebra de pagina em '---' isolado: ativada (--pagebreak-on-hr)")
 
         result = convert_md_to_pdf(
             md_path=md_path,
@@ -917,6 +920,7 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
             css_path=css_path,
             verbose=verbose,
             landscape=landscape,
+            pagebreak_on_hr=pagebreak_on_hr,
         )
 
         if result['status'] == 'success':

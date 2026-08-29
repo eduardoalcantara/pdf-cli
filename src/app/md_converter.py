@@ -25,7 +25,10 @@ Limitações Conhecidas:
 - Recomendado usar WeasyPrint no Linux para melhor qualidade
 
 Quebra de página manual no Markdown (linha inteira):
-- ``\\pagebreak`` | ``[pagebreak]`` | ``<!-- pdf-cli:pagebreak -->``
+
+- Recomendado: ``<!-- pdf-cli:pagebreak -->`` (invisível no preview Markdown)
+- Alternativas: ``\\pagebreak`` | ``[pagebreak]``
+- Legado (opt-in via ``--pagebreak-on-hr``): ``---`` (regra horizontal Markdown)
 """
 
 from pathlib import Path
@@ -374,7 +377,7 @@ hr {{
     margin: 2em 0;
 }}
 
-/* Quebra de página manual: use \\pagebreak, [pagebreak] ou <!-- pdf-cli:pagebreak --> no .md */
+/* Quebra de página manual: use <!-- pdf-cli:pagebreak --> (recomendado), \\pagebreak ou [pagebreak] no .md */
 .pdf-cli-page-break {{
     display: block;
     page-break-before: always;
@@ -399,13 +402,14 @@ _MARKDOWN2_EXTRAS = [
 ]
 
 # Marcadores de quebra de página aceitos no Markdown (linha inteira).
-# ``---`` (regra horizontal Markdown) também vira nova página no PDF.
+# ``---`` só é considerado com ``pagebreak_on_hr=True`` (--pagebreak-on-hr).
 _PAGE_BREAK_LINE_PATTERNS = (
+    r'^\s*<!--\s*pdf-cli:pagebreak\s*-->\s*$',
     r'^\s*\\pagebreak\s*$',
     r'^\s*\[pagebreak\]\s*$',
-    r'^\s*<!--\s*pdf-cli:pagebreak\s*-->\s*$',
-    r'^\s*---\s*$',
 )
+
+_PAGE_BREAK_HR_PATTERN = r'^\s*---\s*$'
 
 _PAGE_BREAK_HTML = '\n<div class="pdf-cli-page-break"></div>\n'
 
@@ -468,7 +472,7 @@ def _column_profile_for_header(header: str) -> dict:
     }
 
 
-def _preprocess_markdown(md_content: str) -> str:
+def _preprocess_markdown(md_content: str, pagebreak_on_hr: bool = False) -> str:
     """
     Pré-processa Markdown antes da conversão para HTML.
 
@@ -477,19 +481,24 @@ def _preprocess_markdown(md_content: str) -> str:
 
     Marcadores aceitos (linha inteira no .md):
 
+    - ``<!-- pdf-cli:pagebreak -->`` (recomendado; invisível no preview MD)
     - ``\\pagebreak``
     - ``[pagebreak]``
-    - ``<!-- pdf-cli:pagebreak -->``
-    - ``---`` (regra horizontal Markdown → nova página; não afeta ``|------|`` em tabelas)
+    - ``---`` somente se ``pagebreak_on_hr=True`` (legado; não afeta ``|------|`` em tabelas)
 
     Args:
         md_content: Conteúdo Markdown original.
+        pagebreak_on_hr: Se True, trata ``---`` em linha isolada como quebra de página.
 
     Returns:
         str: Markdown com quebras de página materializadas em HTML.
     """
+    patterns = list(_PAGE_BREAK_LINE_PATTERNS)
+    if pagebreak_on_hr:
+        patterns.append(_PAGE_BREAK_HR_PATTERN)
+
     processed = md_content
-    for pattern in _PAGE_BREAK_LINE_PATTERNS:
+    for pattern in patterns:
         processed = re.sub(
             pattern,
             _PAGE_BREAK_HTML,
@@ -1110,6 +1119,7 @@ def convert_md_to_pdf(
     css_path: Optional[str] = None,
     verbose: bool = False,
     landscape: bool = False,
+    pagebreak_on_hr: bool = False,
 ) -> dict:
     """
     Converte um arquivo Markdown para PDF.
@@ -1120,6 +1130,7 @@ def convert_md_to_pdf(
         css_path: Caminho opcional para arquivo CSS customizado
         verbose: Se True, exibe informações detalhadas
         landscape: Se True, gera páginas em orientação paisagem (recomendado para tabelas largas)
+        pagebreak_on_hr: Se True, trata ``---`` em linha isolada como quebra de página (legado)
 
     Returns:
         dict: Dicionário com informações sobre a conversão:
@@ -1157,7 +1168,7 @@ def convert_md_to_pdf(
             print(f"[INFO] Lendo arquivo markdown: {md_path}")
 
         md_content = md_file.read_text(encoding='utf-8')
-        md_content = _preprocess_markdown(md_content)
+        md_content = _preprocess_markdown(md_content, pagebreak_on_hr=pagebreak_on_hr)
 
         if verbose:
             print("[INFO] Convertendo Markdown para HTML...")
