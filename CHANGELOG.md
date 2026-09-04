@@ -4,9 +4,14 @@ Todas as mudanças notáveis do projeto serão documentadas neste arquivo.
 
 ## [Unreleased]
 
+### Adicionado
+- ✅ **md-to-pdf — Mermaid**: blocos `` ```mermaid `` `` são renderizados localmente para PNG via `mmdc` ou `npx @mermaid-js/mermaid-cli` e embutidos no PDF (sem APIs online)
+- ✅ **md-to-pdf — `--no-mermaid`**: desliga a renderização e mantém o diagrama como caixa de código
+
 ### Melhorado
 - 🔧 **md-to-pdf — quebra de página**: `<!-- pdf-cli:pagebreak -->` passa a ser o marcador recomendado (invisível no preview Markdown)
 - 🔧 **md-to-pdf — compatibilidade**: `---` deixa de ser quebra de página por padrão; use `--pagebreak-on-hr` para o comportamento legado
+- 🔧 **xhtml2pdf**: `link_callback` resolve imagens locais relativas (necessário para PNGs Mermaid no fallback)
 
 ### Alterado
 - ⚠️ **pdf-to-md**: separadores entre páginas passam a usar `<!-- pdf-cli:pagebreak -->` em vez de `---`

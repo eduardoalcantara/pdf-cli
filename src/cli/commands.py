@@ -902,6 +902,7 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
         verbose = has_flag(args, 'verbose', 'l')
         landscape = has_flag(args, 'landscape')
         pagebreak_on_hr = has_flag(args, 'pagebreak-on-hr', 'pagebreak_on_hr')
+        render_mermaid = not has_flag(args, 'no-mermaid', 'no_mermaid')
 
         # Importar converter
         from app.md_converter import convert_md_to_pdf
@@ -913,6 +914,8 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
                 print("[INFO] Orientacao: paisagem (--landscape)")
             if pagebreak_on_hr:
                 print("[INFO] Quebra de pagina em '---' isolado: ativada (--pagebreak-on-hr)")
+            if not render_mermaid:
+                print("[INFO] Renderizacao Mermaid desligada (--no-mermaid)")
 
         result = convert_md_to_pdf(
             md_path=md_path,
@@ -921,6 +924,7 @@ def cmd_md_to_pdf(args: Dict[str, Any]) -> int:
             verbose=verbose,
             landscape=landscape,
             pagebreak_on_hr=pagebreak_on_hr,
+            render_mermaid=render_mermaid,
         )
 
         if result['status'] == 'success':

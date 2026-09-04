@@ -29,14 +29,21 @@ Quebra de página manual no Markdown (linha inteira):
 - Recomendado: ``<!-- pdf-cli:pagebreak -->`` (invisível no preview Markdown)
 - Alternativas: ``\\pagebreak`` | ``[pagebreak]``
 - Legado (opt-in via ``--pagebreak-on-hr``): ``---`` (regra horizontal Markdown)
+
+Blocos Mermaid (`` ```mermaid `` ``):
+- Renderizados localmente via ``mmdc`` ou ``npx @mermaid-js/mermaid-cli`` para PNG
+- Sem envio a APIs online (privacidade); fallback para caixa de código se CLI ausente
+- Desligar com ``--no-mermaid``
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 import html as html_module
 import markdown2
 import platform
 import re
+import shutil
+import subprocess
 import sys
 from app.logging import get_logger
 
@@ -413,6 +420,16 @@ _PAGE_BREAK_HR_PATTERN = r'^\s*---\s*$'
 
 _PAGE_BREAK_HTML = '\n<div class="pdf-cli-page-break"></div>\n'
 
+# Blocos fenced ```mermaid ... ``` (linguagem case-insensitive).
+_MERMAID_FENCE_RE = re.compile(
+    r'^```mermaid[ \t]*\r?\n(.*?)```',
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+
+_MERMAID_WORKDIR_NAME = '.pdf-cli-mermaid'
+_MERMAID_CLI_TIMEOUT_SEC = 180
+_MERMAID_PNG_WIDTH = 1200
+
 # Substituições de símbolos Unicode → texto ASCII para xhtml2pdf/ReportLab.
 _XHTML2PDF_SYMBOL_REPLACEMENTS = (
     ("\u274c\ufe0f", "[X]"),   # ❌ + VS16
@@ -506,6 +523,198 @@ def _preprocess_markdown(md_content: str, pagebreak_on_hr: bool = False) -> str:
             flags=re.MULTILINE | re.IGNORECASE,
         )
     return processed
+
+
+def _find_mermaid_cli() -> Optional[List[str]]:
+    """
+    Localiza o Mermaid CLI no sistema.
+
+    Ordem de preferência:
+    1. ``mmdc`` (ou ``mmdc.cmd`` no Windows) no PATH
+    2. ``npx --yes @mermaid-js/mermaid-cli``
+
+    Returns:
+        Lista de argumentos iniciais do comando, ou None se indisponível.
+    """
+    for name in ('mmdc', 'mmdc.cmd'):
+        found = shutil.which(name)
+        if found:
+            return [found]
+
+    for name in ('npx', 'npx.cmd'):
+        found = shutil.which(name)
+        if found:
+            return [found, '--yes', '@mermaid-js/mermaid-cli']
+
+    return None
+
+
+def _run_mmdc(
+    cli: Sequence[str],
+    input_mmd: Path,
+    output_png: Path,
+    timeout: int = _MERMAID_CLI_TIMEOUT_SEC,
+) -> None:
+    """
+    Executa o Mermaid CLI para gerar um PNG a partir de um arquivo ``.mmd``.
+
+    Args:
+        cli: Comando base (``mmdc`` ou ``npx ...``).
+        input_mmd: Caminho do diagrama Mermaid de entrada.
+        output_png: Caminho do PNG de saída.
+        timeout: Timeout em segundos.
+
+    Raises:
+        RuntimeError: Se a renderização falhar ou o PNG não for gerado.
+        subprocess.TimeoutExpired: Se exceder o timeout.
+    """
+    cmd = list(cli) + [
+        '-i', str(input_mmd),
+        '-o', str(output_png),
+        '-b', 'white',
+        '-w', str(_MERMAID_PNG_WIDTH),
+    ]
+    completed = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or '').strip()
+        raise RuntimeError(
+            f"Mermaid CLI falhou (codigo {completed.returncode})"
+            + (f": {detail}" if detail else "")
+        )
+    if not output_png.is_file() or output_png.stat().st_size == 0:
+        raise RuntimeError(f"PNG Mermaid nao gerado: {output_png}")
+
+
+def _render_mermaid_blocks(
+    md_content: str,
+    work_dir: Path,
+    verbose: bool = False,
+    enabled: bool = True,
+) -> Tuple[str, int]:
+    """
+    Substitui blocos `` ```mermaid `` `` por imagens PNG renderizadas localmente.
+
+    Usa ``mmdc`` ou ``npx @mermaid-js/mermaid-cli``. Em falha parcial ou total,
+    mantém o bloco original como código e emite aviso (não aborta a conversão).
+
+    Args:
+        md_content: Markdown original.
+        work_dir: Diretório para arquivos ``.mmd``/``.png`` temporários.
+        verbose: Se True, imprime progresso.
+        enabled: Se False, retorna o conteúdo inalterado.
+
+    Returns:
+        Tupla ``(markdown_processado, quantidade_de_diagramas_renderizados)``.
+    """
+    if not enabled:
+        return md_content, 0
+
+    matches = list(_MERMAID_FENCE_RE.finditer(md_content))
+    if not matches:
+        return md_content, 0
+
+    cli = _find_mermaid_cli()
+    if cli is None:
+        msg = (
+            "[AVISO] Blocos Mermaid encontrados, mas mmdc/npx nao esta disponivel. "
+            "Mantendo como caixa de codigo. Instale Node.js e "
+            "@mermaid-js/mermaid-cli, ou use mmdc no PATH."
+        )
+        print(msg)
+        return md_content, 0
+
+    if verbose:
+        print(f"[INFO] Mermaid CLI: {' '.join(cli)}")
+        print(f"[INFO] Renderizando {len(matches)} bloco(s) Mermaid...")
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    rendered_count = 0
+    parts: List[str] = []
+    pos = 0
+
+    for index, match in enumerate(matches, start=1):
+        parts.append(md_content[pos:match.start()])
+        diagram_src = match.group(1).strip()
+        mmd_path = work_dir / f"mermaid-{index}.mmd"
+        png_path = work_dir / f"mermaid-{index}.png"
+        rel_png = f"{work_dir.name}/mermaid-{index}.png".replace('\\', '/')
+
+        try:
+            mmd_path.write_text(diagram_src + '\n', encoding='utf-8')
+            _run_mmdc(cli, mmd_path, png_path)
+            parts.append(f'\n![Diagrama Mermaid {index}]({rel_png})\n')
+            rendered_count += 1
+            if verbose:
+                print(f"[INFO] Mermaid {index}/{len(matches)} renderizado: {rel_png}")
+        except subprocess.TimeoutExpired:
+            print(
+                f"[AVISO] Timeout ao renderizar Mermaid #{index}; "
+                "mantendo bloco como codigo."
+            )
+            parts.append(match.group(0))
+        except Exception as exc:
+            print(
+                f"[AVISO] Falha ao renderizar Mermaid #{index}: {exc}. "
+                "Mantendo bloco como codigo."
+            )
+            parts.append(match.group(0))
+
+        pos = match.end()
+
+    parts.append(md_content[pos:])
+    return ''.join(parts), rendered_count
+
+
+def _cleanup_mermaid_workdir(work_dir: Optional[Path]) -> None:
+    """Remove o diretório temporário de diagramas Mermaid, se existir."""
+    if work_dir is None:
+        return
+    try:
+        if work_dir.is_dir():
+            shutil.rmtree(work_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _xhtml2pdf_link_callback(base_url: str):
+    """
+    Resolve URIs de imagens locais para caminhos absolutos no xhtml2pdf.
+
+    Args:
+        base_url: Diretório base (pasta do ``.md``).
+
+    Returns:
+        Callback compatível com ``pisa.CreatePDF(link_callback=...)``.
+    """
+    base = Path(base_url)
+
+    def link_callback(uri: str, rel: Optional[str] = None) -> str:
+        if not uri:
+            return uri
+        lower = uri.lower()
+        if lower.startswith(('http://', 'https://', 'data:')):
+            return uri
+
+        path_str = uri
+        if lower.startswith('file:///'):
+            path_str = uri[8:]
+            if platform.system() == 'Windows' and path_str.startswith('/'):
+                path_str = path_str.lstrip('/')
+        elif lower.startswith('file://'):
+            path_str = uri[7:]
+
+        path = Path(path_str)
+        if not path.is_absolute():
+            path = base / path_str
+        return str(path.resolve())
+
+    return link_callback
 
 
 def _substitute_xhtml2pdf_problematic_chars(text: str) -> str:
@@ -1106,7 +1315,7 @@ def _convert_with_xhtml2pdf(
             BytesIO(html_with_css.encode('utf-8')),
             dest=result_file,
             encoding='utf-8',
-            link_callback=None  # Para imagens, precisaria de callback customizado
+            link_callback=_xhtml2pdf_link_callback(base_url),
         )
 
     if pisa_status.err:
@@ -1120,6 +1329,7 @@ def convert_md_to_pdf(
     verbose: bool = False,
     landscape: bool = False,
     pagebreak_on_hr: bool = False,
+    render_mermaid: bool = True,
 ) -> dict:
     """
     Converte um arquivo Markdown para PDF.
@@ -1131,6 +1341,7 @@ def convert_md_to_pdf(
         verbose: Se True, exibe informações detalhadas
         landscape: Se True, gera páginas em orientação paisagem (recomendado para tabelas largas)
         pagebreak_on_hr: Se True, trata ``---`` em linha isolada como quebra de página (legado)
+        render_mermaid: Se True, renderiza blocos `` ```mermaid `` `` via mmdc/npx
 
     Returns:
         dict: Dicionário com informações sobre a conversão:
@@ -1162,12 +1373,26 @@ def convert_md_to_pdf(
     # Garantir que o diretório de saída existe
     pdf_file.parent.mkdir(parents=True, exist_ok=True)
 
+    mermaid_dir: Optional[Path] = None
+    mermaid_rendered = 0
+
     try:
         # Ler conteúdo do markdown
         if verbose:
             print(f"[INFO] Lendo arquivo markdown: {md_path}")
 
         md_content = md_file.read_text(encoding='utf-8')
+
+        mermaid_dir = md_file.parent / _MERMAID_WORKDIR_NAME
+        md_content, mermaid_rendered = _render_mermaid_blocks(
+            md_content,
+            work_dir=mermaid_dir,
+            verbose=verbose,
+            enabled=render_mermaid,
+        )
+        if verbose and render_mermaid and mermaid_rendered:
+            print(f"[INFO] Diagramas Mermaid embutidos: {mermaid_rendered}")
+
         md_content = _preprocess_markdown(md_content, pagebreak_on_hr=pagebreak_on_hr)
 
         if verbose:
@@ -1185,7 +1410,7 @@ def convert_md_to_pdf(
         if verbose:
             print("[INFO] Convertendo HTML para PDF...")
 
-        # Resolver caminhos relativos de imagens
+        # Resolver caminhos relativos de imagens (inclui PNGs Mermaid em .pdf-cli-mermaid/)
         base_url = str(md_file.parent.absolute())
 
         # Detectar plataforma para mensagens informativas
@@ -1300,7 +1525,8 @@ def convert_md_to_pdf(
             'status': 'success',
             'input_file': str(md_path),
             'output_file': str(pdf_path),
-            'pages': num_pages
+            'pages': num_pages,
+            'mermaid_rendered': mermaid_rendered,
         }
 
         # Log da operação
@@ -1312,7 +1538,9 @@ def convert_md_to_pdf(
             parameters={
                 'css_path': css_path,
                 'landscape': landscape,
-                'verbose': verbose
+                'verbose': verbose,
+                'render_mermaid': render_mermaid,
+                'mermaid_rendered': mermaid_rendered,
             },
             result={
                 'pages': num_pages
@@ -1344,7 +1572,8 @@ def convert_md_to_pdf(
             parameters={
                 'css_path': css_path,
                 'landscape': landscape,
-                'verbose': verbose
+                'verbose': verbose,
+                'render_mermaid': render_mermaid,
             },
             result={
                 'error': str(e)
@@ -1352,4 +1581,6 @@ def convert_md_to_pdf(
             notes=error_msg
         )
 
-        raise
+        return result
+    finally:
+        _cleanup_mermaid_workdir(mermaid_dir)
