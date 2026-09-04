@@ -38,8 +38,10 @@ Blocos Mermaid (`` ```mermaid `` ``):
 
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
+import contextlib
 import html as html_module
 import markdown2
+import os
 import platform
 import re
 import shutil
@@ -51,7 +53,29 @@ from app.logging import get_logger
 # Monkey-patch ANTES de importar WeasyPrint
 # Isso captura a mensagem durante a importação das bibliotecas C
 class SilentStderr:
-    """Stderr que filtra mensagens do WeasyPrint sobre bibliotecas externas."""
+    """
+    Stderr que oculta ruído de bibliotecas nativas (WeasyPrint/GTK/Fontconfig).
+
+    Não deve expor detalhes de implementação (Python, GTK, UWP) ao usuário final.
+    """
+
+    _NOISE_SUBSTRINGS = (
+        'weasyprint could not import',
+        'doc.courtbouillon.org',
+        'installation steps',
+        'troubleshooting',
+        'first_steps.html',
+        'please carefully follow',
+        'glib-gio-warning',
+        'glib-warning',
+        'glib-gobject-warning',
+        'glib-critical',
+        'fontconfig error',
+        'fontconfig warning',
+        'unexpectedly, uwp app',
+        'cannot load default config file',
+    )
+
     def __init__(self, original):
         self.original = original
         self.buffer = ""
@@ -75,10 +99,23 @@ class SilentStderr:
             self._process_line(self.buffer)
             self.buffer = ""
 
+    def _is_noise_line(self, line: str) -> bool:
+        """Retorna True se a linha for ruído conhecido de GTK/WeasyPrint/Fontconfig."""
+        line_lower = line.lower()
+        if any(marker in line_lower for marker in self._NOISE_SUBSTRINGS):
+            return True
+        # Ex.: (process:21820): GLib-GIO-WARNING **: ...
+        if re.match(r'^\(process:\d+\):\s*glib', line_lower.strip()):
+            return True
+        return False
+
     def _process_line(self, line: str) -> None:
         """Processa uma linha completa."""
         line_stripped = line.strip()
         line_lower = line.lower()
+
+        if self._is_noise_line(line):
+            return
 
         # Detectar início do aviso - pode começar com separador ou diretamente com a mensagem
         if line_stripped == "-----":
@@ -136,6 +173,38 @@ class SilentStderr:
         return getattr(self.original, name)
 
 
+@contextlib.contextmanager
+def _quiet_native_stderr():
+    """
+    Redireciona o stderr nativo (fd 2) para NUL.
+
+    Bibliotecas C (GTK/GLib/Fontconfig) escrevem direto no descritor de arquivo,
+    contornando ``sys.stderr`` do Python. Este contexto oculta esse ruído.
+    """
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        yield
+        return
+
+    try:
+        saved_fd = os.dup(2)
+    except OSError:
+        os.close(devnull_fd)
+        yield
+        return
+
+    try:
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        try:
+            os.dup2(saved_fd, 2)
+        finally:
+            os.close(saved_fd)
+            os.close(devnull_fd)
+
+
 # Aplicar o patch ANTES de importar WeasyPrint
 _original_stderr = sys.stderr
 sys.stderr = SilentStderr(sys.stderr)
@@ -145,7 +214,8 @@ sys.stderr = SilentStderr(sys.stderr)
 WEASYPRINT_AVAILABLE = False
 WEASYPRINT_ERROR = None
 try:
-    from weasyprint import HTML, CSS
+    with _quiet_native_stderr():
+        from weasyprint import HTML, CSS
     WEASYPRINT_AVAILABLE = True
 except (ImportError, OSError) as e:
     WEASYPRINT_ERROR = str(e)
@@ -1278,7 +1348,7 @@ def _convert_with_xhtml2pdf(
         print(f"[INFO] Usando CSS customizado: {css_path}")
     elif verbose:
         orientation = "paisagem" if landscape else "retrato"
-        print(f"[INFO] Usando CSS padrao (xhtml2pdf, {orientation})")
+        print(f"[INFO] Usando CSS padrao ({orientation})")
 
     # Inserir CSS no HTML (xhtml2pdf precisa do CSS inline ou em <style>)
     # Extrair apenas o conteúdo do body se existir
@@ -1427,47 +1497,43 @@ def convert_md_to_pdf(
                         print(f"[INFO] Usando CSS customizado: {css_path}")
                 elif verbose:
                     orientation = "paisagem" if landscape else "retrato"
-                    print(f"[INFO] Usando CSS padrao (WeasyPrint, {orientation}) com suporte a emojis")
+                    print(f"[INFO] Usando CSS padrao ({orientation}) com suporte a emojis")
 
                 css_obj = CSS(string=css_content_str)
 
-                # Gerar PDF (aplicar filtro também durante uso, não apenas importação)
+                # Ocultar ruído GTK/GLib/Fontconfig (stderr Python + nativo)
                 _original_stderr_use = sys.stderr
                 sys.stderr = SilentStderr(sys.stderr)
                 try:
-                    html_doc = HTML(string=full_html, base_url=base_url)
-                    html_doc.write_pdf(pdf_path, stylesheets=[css_obj])
+                    with _quiet_native_stderr():
+                        html_doc = HTML(string=full_html, base_url=base_url)
+                        html_doc.write_pdf(pdf_path, stylesheets=[css_obj])
                 finally:
                     sys.stderr = _original_stderr_use
 
                 if verbose:
-                    print("[INFO] PDF gerado usando WeasyPrint")
+                    print("[INFO] PDF gerado com motor de alta qualidade")
 
             except Exception as weasy_error:
                 # WeasyPrint falhou, tentar fallback
                 if verbose:
-                    print(f"[AVISO] WeasyPrint falhou: {str(weasy_error)}")
-                    if is_windows:
-                        print("[INFO] No Windows, WeasyPrint requer bibliotecas do sistema (GTK).")
-                    print("[INFO] Tentando usar xhtml2pdf como fallback...")
+                    print("[AVISO] Motor primario indisponivel; usando fallback portavel...")
 
                 # Fallback para xhtml2pdf
                 if not XHTML2PDF_AVAILABLE:
                     error_msg = (
-                        f"WeasyPrint falhou e xhtml2pdf nao esta disponivel.\n"
-                        f"Erro WeasyPrint: {str(weasy_error)}\n"
+                        "Nao foi possivel gerar o PDF: falta suporte de renderizacao no sistema.\n"
+                        f"Detalhe tecnico: {str(weasy_error)}\n"
                     )
                     if is_windows:
                         error_msg += (
-                            "No Windows, WeasyPrint requer bibliotecas GTK instaladas.\n"
-                            "Recomendacao: Instale xhtml2pdf (portavel): pip install xhtml2pdf\n"
-                            "Ou instale as dependencias do WeasyPrint para Windows."
+                            "No Windows, instale o GTK3 Runtime ou use o fallback portavel "
+                            "(xhtml2pdf via pip install xhtml2pdf)."
                         )
                     else:
                         error_msg += (
-                            "No Linux, instale as dependencias do sistema para WeasyPrint:\n"
-                            "  Ubuntu/Debian: sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0\n"
-                            "Ou instale xhtml2pdf como alternativa: pip install xhtml2pdf"
+                            "No Linux, instale as dependencias do sistema (pango/cairo) "
+                            "ou xhtml2pdf: pip install xhtml2pdf"
                         )
                     raise RuntimeError(error_msg)
 
@@ -1479,10 +1545,8 @@ def convert_md_to_pdf(
         elif XHTML2PDF_AVAILABLE:
             # Usar xhtml2pdf diretamente (WeasyPrint não disponível)
             if verbose:
-                if WEASYPRINT_ERROR:
-                    print(f"[INFO] WeasyPrint nao disponivel: {WEASYPRINT_ERROR}")
-                print("[INFO] Usando xhtml2pdf (portavel, funciona em Windows e Linux)")
-                print("[INFO] Simbolos Unicode (ex.: emojis) serao convertidos para texto ASCII")
+                print("[INFO] Usando motor portavel de conversao")
+                print("[INFO] Alguns simbolos especiais podem ser simplificados no PDF")
 
             full_html = build_xhtml2pdf_html(md_content)
             _convert_with_xhtml2pdf(
@@ -1491,20 +1555,10 @@ def convert_md_to_pdf(
         else:
             # Nenhuma biblioteca disponível
             error_msg = (
-                "Nenhuma biblioteca de conversao HTML->PDF disponivel.\n"
-                "Instale uma das opcoes:\n"
-                "  - xhtml2pdf (recomendado, portavel): pip install xhtml2pdf\n"
+                "Nao foi possivel gerar o PDF: nenhum motor de conversao esta disponivel.\n"
+                "Instale as dependencias do pdf-cli (requirements.txt) e, no Windows, "
+                "o GTK3 Runtime para melhor qualidade tipografica."
             )
-            if not is_windows:
-                error_msg += (
-                    "  - weasyprint (melhor qualidade, requer dependencias do sistema): pip install weasyprint\n"
-                    "    Depois instale: sudo apt-get install python3-cffi python3-brotli libpango-1.0-0 libpangoft2-1.0-0"
-                )
-            else:
-                error_msg += (
-                    "  - weasyprint (requer GTK no Windows): pip install weasyprint\n"
-                    "    Consulte: https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows"
-                )
             raise RuntimeError(error_msg)
 
         # Obter número de páginas do PDF gerado

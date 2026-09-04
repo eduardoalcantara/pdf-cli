@@ -12,6 +12,7 @@ Todas as mudanças notáveis do projeto serão documentadas neste arquivo.
 - 🔧 **md-to-pdf — quebra de página**: `<!-- pdf-cli:pagebreak -->` passa a ser o marcador recomendado (invisível no preview Markdown)
 - 🔧 **md-to-pdf — compatibilidade**: `---` deixa de ser quebra de página por padrão; use `--pagebreak-on-hr` para o comportamento legado
 - 🔧 **xhtml2pdf**: `link_callback` resolve imagens locais relativas (necessário para PNGs Mermaid no fallback)
+- 🔧 **md-to-pdf — UX**: silencia avisos nativos GTK/GLib/Fontconfig no stderr; mensagens ao usuário sem detalhes de stack/Python
 
 ### Alterado
 - ⚠️ **pdf-to-md**: separadores entre páginas passam a usar `<!-- pdf-cli:pagebreak -->` em vez de `---`
